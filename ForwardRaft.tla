@@ -430,30 +430,27 @@ LimboCreateTransaction(nid) ==
 \* Limbo leader confirms transaction after quorum receives it
 LimboConfirmTransaction(nid) ==
     LET node == Nodes[nid]
+        txn_entry == ArrLast(node.limbo_queue)
     IN
     /\ node.limbo_state = LimboStateLeader
     /\ ~ArrIsEmpty(node.limbo_queue)
+    /\ CountNodesWithEntry(txn_entry, node.raft_term) >= Quorum
     \* ---
-    /\ LET txn_entry == ArrLast(node.limbo_queue)
+    /\ LET confirm_entry == EntryNewConfirm(
+               nid,
+               node.next_lsn,
+               nid,
+               txn_entry.lsn
+           )
        IN
-       /\ CountNodesWithEntry(txn_entry, node.raft_term) >= Quorum
-       /\ LET confirm_entry == EntryNewConfirm(
-                  nid,
-                  node.next_lsn,
-                  nid,
-                  txn_entry.lsn
-              )
-              old_vclock_lsn == node.limbo_vclock[nid]
-              new_vclock == VclockSet(node.limbo_vclock, nid, txn_entry.lsn)
-          IN
-          /\ Assert(txn_entry.lsn >= old_vclock_lsn,
-                    "Vclock LSN must not decrease")
-          /\ Nodes' = NodesUpdate(nid,
-                       SetLimboQueue(<<>>,
-                       SetLimboVclock(new_vclock,
-                       SetData(ArrAppend(txn_entry, node.data),
-                       SetNextLSN(node.next_lsn + 1,
-                       JournalAppend(confirm_entry, node))))))
+       /\ Assert(txn_entry.lsn >= node.limbo_vclock[nid],
+                 "Vclock LSN must not decrease")
+       /\ Nodes' = NodesUpdate(nid,
+                    SetLimboQueue(<<>>,
+                    SetLimboVclock(VclockSet(node.limbo_vclock, nid, txn_entry.lsn),
+                    SetData(ArrAppend(txn_entry, node.data),
+                    SetNextLSN(node.next_lsn + 1,
+                    JournalAppend(confirm_entry, node))))))
     /\ UNCHANGED<<GlobalTxnCount>>
 
 --------------------------------------------------------------------------------
