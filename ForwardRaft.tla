@@ -53,6 +53,9 @@ CONSTANT LimboStateLeader
 \* Symmetry - all nodes are equivalent
 Perms == Permutations(NodeIDs)
 
+\* Maximum expected journal length per node
+MaxJournalLength == (MaxTerm * 2 + MaxTransactions * 2) * Cardinality(NodeIDs)
+
 --------------------------------------------------------------------------------
 \*
 \* Variables
@@ -639,6 +642,11 @@ PromotionQueueInvariant ==
             /\ PromoteIsValid(promotions[j])
             => promotions[i].raft_term # promotions[j].raft_term
 
+\* Journal length must not exceed expected maximum
+JournalLengthInvariant ==
+    \A nid \in NodeIDs:
+        Len(Nodes[nid].journal) <= MaxJournalLength
+
 \* Limbo leader can only exist if Raft leader
 LimboLeaderInvariant ==
     \A nid \in NodeIDs:
@@ -669,6 +677,7 @@ NoTransactionLossInvariant ==
 TotalInvariant ==
     /\ DataConsistencyInvariant
     /\ PromotionQueueInvariant
+    /\ JournalLengthInvariant
     /\ LimboLeaderInvariant
     /\ LimboQueueOwnerInvariant
     /\ NoTransactionLossInvariant
