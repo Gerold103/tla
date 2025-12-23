@@ -369,8 +369,8 @@ LimboConfirmPromote(nid) ==
     /\ node.raft_state = RaftStateLeader
     /\ PromoteIsValid(promote_entry)
     /\ promote_entry.raft_term = node.raft_term
-    \* ---
     /\ CountNodesWithEntry(promote_entry, node.raft_term) >= Quorum
+    \* ---
     /\ Assert(promote_entry.raft_term > node.limbo_term,
               "Local pending promote's term is always bigger than the last confirmed limbo term")
     /\ Assert(ArrLen(node.limbo_queue) <= 1,
@@ -382,8 +382,7 @@ LimboConfirmPromote(nid) ==
            txn_entry == IF has_txn THEN ArrLast(node.limbo_queue) ELSE NULL
            \* Commit/rollback transaction based on this PROMOTE's confirm_lsn
            owner_matches == has_txn /\ txn_entry.origin_id = promote_entry.prev_owner
-           txn_covered == owner_matches /\ txn_entry.lsn <= promote_entry.confirm_lsn
-           should_commit == txn_covered
+           should_commit == owner_matches /\ txn_entry.lsn <= promote_entry.confirm_lsn
            confirm_entry == EntryNewConfirm(
                nid,
                node.next_lsn,
@@ -391,8 +390,6 @@ LimboConfirmPromote(nid) ==
                promote_entry.confirm_lsn
            )
            new_data == IF should_commit THEN ArrAppend(txn_entry, node.data) ELSE node.data
-           \* Clear all promotions (local confirmation)
-           new_promotions == PromotionsEmpty
        IN
        /\ Assert(\A i \in NodeIDs:
                    promote_entry.confirmed_vclock[i] >= node.limbo_vclock[i],
@@ -401,7 +398,7 @@ LimboConfirmPromote(nid) ==
                     SetLimboTerm(promote_entry.raft_term,
                     SetLimboOwner(nid,
                     SetLimboVclock(promote_entry.confirmed_vclock,
-                    SetLimboPromotions(new_promotions,
+                    SetLimboPromotions(PromotionsEmpty,
                     SetLimboQueue(<<>>,
                     SetData(new_data,
                     SetNextLSN(node.next_lsn + 1,
