@@ -336,15 +336,13 @@ LimboWritePromote(nid) ==
            base_vclock == IF has_pending
                           THEN latest_promote.confirmed_vclock
                           ELSE node.limbo_vclock
-           \* Fill our component in the vclock
-           confirmed_vclock == VclockSet(base_vclock, node.limbo_owner, confirm_lsn)
            entry == EntryNewPromote(
                nid,
                node.next_lsn,
                node.raft_term,
                node.limbo_owner,
                confirm_lsn,
-               confirmed_vclock
+               VclockSet(base_vclock, node.limbo_owner, confirm_lsn)
            )
            old_promote == node.limbo_promotions[nid]
            new_promotions == [node.limbo_promotions EXCEPT ![nid] = entry]
