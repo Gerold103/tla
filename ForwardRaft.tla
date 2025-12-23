@@ -461,10 +461,12 @@ LimboConfirmTransaction(nid) ==
 \* Find the next journal entry to replicate (first one not present on destination)
 \* Returns 0 if destination has all entries, otherwise returns the index
 NextEntryToReplicate(src_node, dst_node) ==
-    LET missing == {i \in DOMAIN(src_node.journal): ~HasEntry(dst_node, src_node.journal[i])}
-    IN IF missing = {}
-       THEN 0
-       ELSE CHOOSE i \in missing: \A j \in missing: i <= j
+    IF \E i \in DOMAIN(src_node.journal): ~HasEntry(dst_node, src_node.journal[i])
+    THEN CHOOSE i \in DOMAIN(src_node.journal):
+        /\ ~HasEntry(dst_node, src_node.journal[i])
+        /\ \A j \in DOMAIN(src_node.journal):
+            ~HasEntry(dst_node, src_node.journal[j]) => i <= j
+    ELSE 0
 
 \* Apply a PROMOTE entry to destination node
 ReplicatePromote(entry, dst_nid) ==
