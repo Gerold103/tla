@@ -162,21 +162,12 @@ PromotionsRemoveUpToTerm(term, promotions) ==
         IF PromoteIsValid(promotions[nid]) /\ promotions[nid].raft_term <= term
         THEN PromoteEmpty
         ELSE promotions[nid]]
-
-\* Check if node has an entry in its journal
-HasEntry(node, entry) ==
-    \E i \in DOMAIN(node.journal):
-        EntriesEqual(node.journal[i], entry)
-
-\* Find a pending PROMOTE by node ID and confirm_lsn
-FindPendingPromote(promotions, nid, confirm_lsn) ==
+PromotionsFindPending(nid, confirm_lsn, promotions) ==
     LET promote == promotions[nid]
     IN IF PromoteIsValid(promote) /\ promote.confirm_lsn = confirm_lsn
        THEN promote
        ELSE PromoteEmpty
-
-\* Get the oldest (smallest term) valid promotion from the dictionary
-GetOldestPromotion(promotions) ==
+PromotionsGetOldest(promotions) ==
     IF \E nid \in DOMAIN(promotions): PromoteIsValid(promotions[nid])
     THEN LET oldestNid == CHOOSE nid \in DOMAIN(promotions):
                 /\ PromoteIsValid(promotions[nid])
@@ -185,9 +176,7 @@ GetOldestPromotion(promotions) ==
                     promotions[nid].raft_term <= promotions[otherNid].raft_term
          IN promotions[oldestNid]
     ELSE PromoteEmpty
-
-\* Get the latest (largest term) valid promotion from the dictionary
-GetLatestPromotion(promotions) ==
+PromotionsGetLatest(promotions) ==
     IF \E nid \in DOMAIN(promotions): PromoteIsValid(promotions[nid])
     THEN LET latestNid == CHOOSE nid \in DOMAIN(promotions):
                 /\ PromoteIsValid(promotions[nid])
@@ -196,6 +185,11 @@ GetLatestPromotion(promotions) ==
                     promotions[nid].raft_term >= promotions[otherNid].raft_term
          IN promotions[latestNid]
     ELSE PromoteEmpty
+
+\* Check if node has an entry in its journal
+HasEntry(node, entry) ==
+    \E i \in DOMAIN(node.journal):
+        EntriesEqual(node.journal[i], entry)
 
 \* Count how many nodes have a specific entry and have term <= given term
 \* This ensures we only count acknowledgments from nodes that haven't moved to a higher term
@@ -325,8 +319,8 @@ LimboWritePromote(nid) ==
     /\ Assert(ArrLen(node.limbo_queue) <= 1,
               "Too many transactions in limbo queue during PROMOTE")
     \* ---
-    /\ LET oldest_promote == GetOldestPromotion(node.limbo_promotions)
-           latest_promote == GetLatestPromotion(node.limbo_promotions)
+    /\ LET oldest_promote == PromotionsGetOldest(node.limbo_promotions)
+           latest_promote == PromotionsGetLatest(node.limbo_promotions)
            has_pending == PromoteIsValid(oldest_promote)
            \* confirm_lsn: use oldest promote's if exists, otherwise queue/vclock
            confirm_lsn == IF has_pending
@@ -541,7 +535,7 @@ ReplicateConfirmTransaction(entry, dst_nid) ==
 ReplicateConfirm(entry, dst_nid) ==
     LET dst_node == Nodes[dst_nid]
         current_lsn == dst_node.limbo_vclock[entry.owner_id]
-        promote == FindPendingPromote(dst_node.limbo_promotions, entry.origin_id, entry.confirm_lsn)
+        promote == PromotionsFindPending(entry.origin_id, entry.confirm_lsn, dst_node.limbo_promotions)
     IN
     IF PromoteIsValid(promote)
     THEN ReplicateConfirmPromote(entry, dst_nid, promote)
