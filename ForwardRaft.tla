@@ -497,14 +497,11 @@ ReplicateConfirmPromote(entry, dst_nid, promote) ==
         txn_entry == IF has_txn THEN ArrLast(dst_node.limbo_queue) ELSE NULL
         \* Commit/rollback transaction based on this PROMOTE's confirm_lsn
         owner_matches == has_txn /\ txn_entry.origin_id = promote.prev_owner
-        txn_covered == owner_matches /\ txn_entry.lsn <= promote.confirm_lsn
-        should_commit == txn_covered
+        should_commit == owner_matches /\ txn_entry.lsn <= promote.confirm_lsn
         \* Always clear queue (commit if covered, rollback if not)
         new_data == IF should_commit THEN ArrAppend(txn_entry, dst_node.data) ELSE dst_node.data
         \* Remove promotions with term <= confirmed promote's term, keep higher ones
         new_promotions == RemovePromotionsUpToTerm(dst_node.limbo_promotions, promote.raft_term)
-        \* Change owner to the confirmed PROMOTE's origin
-        new_owner == promote.origin_id
     IN
     /\ Assert(ArrLen(dst_node.limbo_queue) <= 1,
              "Too many transactions in queue during PROMOTE confirm")
@@ -517,7 +514,7 @@ ReplicateConfirmPromote(entry, dst_nid, promote) ==
               "PROMOTE's confirmed_vclock must be >= limbo vclock")
     /\ Nodes' = NodesUpdate(dst_nid,
                  SetLimboTerm(promote.raft_term,
-                 SetLimboOwner(new_owner,
+                 SetLimboOwner(promote.origin_id,
                  SetLimboVclock(promote.confirmed_vclock,
                  SetLimboPromotions(new_promotions,
                  SetLimboQueue(<<>>,
