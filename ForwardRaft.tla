@@ -573,17 +573,17 @@ ReplicateTransaction(entry, dst_nid) ==
 
 \* Main replication action: replicate next entry from src to dst
 ReplicateNextEntry(src_nid, dst_nid) ==
-    LET src_node == Nodes[src_nid]
-        dst_node == Nodes[dst_nid]
-        next_idx == NextEntryToReplicate(src_node, dst_node)
-    IN
     /\ src_nid # dst_nid
-    /\ next_idx # 0
-    /\ LET entry == src_node.journal[next_idx]
+    /\ LET src_node == Nodes[src_nid]
+           dst_node == Nodes[dst_nid]
+           next_idx == NextEntryToReplicate(src_node, dst_node)
        IN
-       /\ CASE entry.type = EntryTypePromote -> ReplicatePromote(entry, dst_nid)
-            [] entry.type = EntryTypeConfirm -> ReplicateConfirm(entry, dst_nid)
-            [] entry.type = EntryTypeTransaction -> ReplicateTransaction(entry, dst_nid)
+       /\ next_idx # 0
+       /\ LET entry == src_node.journal[next_idx]
+          IN
+          /\ CASE entry.type = EntryTypePromote -> ReplicatePromote(entry, dst_nid)
+               [] entry.type = EntryTypeConfirm -> ReplicateConfirm(entry, dst_nid)
+               [] entry.type = EntryTypeTransaction -> ReplicateTransaction(entry, dst_nid)
     /\ UNCHANGED<<GlobalTxnCount>>
 --------------------------------------------------------------------------------
 \*
