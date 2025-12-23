@@ -74,7 +74,7 @@ vars == <<Nodes, GlobalTxnCount>>
 \* Helper functions for object field manipulation
 \*
 
-\* Single field setters
+\* Single field setters - operate on node objects directly
 SetRaftTerm(v, s) == [s EXCEPT !.raft_term = v]
 SetRaftVote(v, s) == [s EXCEPT !.raft_vote = v]
 SetRaftState(v, s) == [s EXCEPT !.raft_state = v]
@@ -86,6 +86,7 @@ SetLimboPromotions(v, s) == [s EXCEPT !.limbo_promotions = v]
 SetLimboQueue(v, s) == [s EXCEPT !.limbo_queue = v]
 SetData(v, s) == [s EXCEPT !.data = v]
 SetNextLSN(v, s) == [s EXCEPT !.next_lsn = v]
+JournalAppend(entry, node) == [node EXCEPT !.journal = Append(node.journal, entry)]
 
 \* Array operations
 ArrLen(s) == Len(s)
@@ -93,19 +94,8 @@ ArrLast(s) == s[Len(s)]
 ArrIsEmpty(s) == Len(s) = 0
 ArrAppend(v, s) == Append(s, v)
 
-\* Node setters
-NodeJournalAppend(nid, entry) == [Nodes EXCEPT ![nid].journal = Append(Nodes[nid].journal, entry)]
-NodeSetRaftTerm(nid, v, nodes) == [nodes EXCEPT ![nid] = SetRaftTerm(v, nodes[nid])]
-NodeSetRaftVote(nid, v, nodes) == [nodes EXCEPT ![nid] = SetRaftVote(v, nodes[nid])]
-NodeSetRaftState(nid, v, nodes) == [nodes EXCEPT ![nid] = SetRaftState(v, nodes[nid])]
-NodeSetLimboState(nid, v, nodes) == [nodes EXCEPT ![nid] = SetLimboState(v, nodes[nid])]
-NodeSetLimboTerm(nid, v, nodes) == [nodes EXCEPT ![nid] = SetLimboTerm(v, nodes[nid])]
-NodeSetLimboOwner(nid, v, nodes) == [nodes EXCEPT ![nid] = SetLimboOwner(v, nodes[nid])]
-NodeSetLimboVclock(nid, v, nodes) == [nodes EXCEPT ![nid] = SetLimboVclock(v, nodes[nid])]
-NodeSetLimboPromotions(nid, v, nodes) == [nodes EXCEPT ![nid] = SetLimboPromotions(v, nodes[nid])]
-NodeSetLimboQueue(nid, v, nodes) == [nodes EXCEPT ![nid] = SetLimboQueue(v, nodes[nid])]
-NodeSetData(nid, v, nodes) == [nodes EXCEPT ![nid] = SetData(v, nodes[nid])]
-NodeSetNextLSN(nid, v, nodes) == [nodes EXCEPT ![nid] = SetNextLSN(v, nodes[nid])]
+\* Update a node in the Nodes dictionary
+NodesUpdate(nid, node) == [Nodes EXCEPT ![nid] = node]
 
 \* Vclock operations
 VclockSet(vclock, nid, val) == [vclock EXCEPT ![nid] = val]
@@ -258,11 +248,12 @@ NodeBumpTerm(nid) ==
     /\ ~ShouldStop
     /\ node.raft_state = RaftStateFollower \/ node.raft_state = RaftStateCandidate
     \* ---
-    /\ Nodes' = NodeSetRaftTerm(nid, node.raft_term + 1,
-                    NodeSetRaftVote(nid, nid,
-                    NodeSetRaftState(nid, RaftStateCandidate,
-                    NodeSetLimboState(nid, LimboStateReplica,
-                    Nodes))))
+    /\ Nodes' = NodesUpdate(nid,
+                SetRaftTerm(node.raft_term + 1,
+                SetRaftVote(nid,
+                SetRaftState(RaftStateCandidate,
+                SetLimboState(LimboStateReplica,
+                node)))))
     /\ UNCHANGED<<GlobalTxnCount>>
 
 \* A node grants its vote to a candidate
@@ -276,7 +267,7 @@ NodeGrantVote(voter_nid, candidate_nid) ==
     /\ voter.raft_vote = 0
     /\ JournalIsFullyReplicatedTo(voter, candidate)
     \* ---
-    /\ Nodes' = NodeSetRaftVote(voter_nid, candidate_nid, Nodes)
+    /\ Nodes' = NodesUpdate(voter_nid, SetRaftVote(candidate_nid, voter))
     /\ UNCHANGED<<GlobalTxnCount>>
 
 \* Node becomes Raft leader after winning election (receiving quorum of votes)
@@ -286,7 +277,7 @@ NodeBecomeLeader(nid) ==
        IN Cardinality({voter_nid \in NodeIDs:
               Nodes[voter_nid].raft_vote = nid /\ Nodes[voter_nid].raft_term = term}) >= Quorum
     \* ---
-    /\ Nodes' = NodeSetRaftState(nid, RaftStateLeader, Nodes)
+    /\ Nodes' = NodesUpdate(nid, SetRaftState(RaftStateLeader, Nodes[nid]))
     /\ UNCHANGED<<GlobalTxnCount>>
 
 \* Node randomly steps down from leader (simulating crash/restart)
@@ -295,22 +286,26 @@ NodeStepDown(nid) ==
     IN
     /\ node.raft_state = RaftStateLeader \/ node.limbo_state = LimboStateLeader
     \* ---
-    /\ Nodes' = NodeSetRaftState(nid, RaftStateFollower,
-                    NodeSetLimboState(nid, LimboStateReplica,
-                    Nodes))
+    /\ Nodes' = NodesUpdate(nid,
+                SetRaftState(RaftStateFollower,
+                SetLimboState(LimboStateReplica,
+                node)))
     /\ UNCHANGED<<GlobalTxnCount>>
 
 \* Node observes higher term from another node and steps down
 NodeObserveHigherTerm(dst_nid, src_nid) ==
-    LET src_term == Nodes[src_nid].raft_term
+    LET dst_node == Nodes[dst_nid]
+        src_term == Nodes[src_nid].raft_term
     IN
-    /\ src_term > Nodes[dst_nid].raft_term
+    /\ src_nid # dst_nid
+    /\ src_term > dst_node.raft_term
     \* ---
-    /\ Nodes' = NodeSetRaftTerm(dst_nid, src_term,
-                    NodeSetRaftVote(dst_nid, 0,
-                    NodeSetRaftState(dst_nid, RaftStateFollower,
-                    NodeSetLimboState(dst_nid, LimboStateReplica,
-                    Nodes))))
+    /\ Nodes' = NodesUpdate(dst_nid,
+                SetRaftTerm(src_term,
+                SetRaftVote(0,
+                SetRaftState(RaftStateFollower,
+                SetLimboState(LimboStateReplica,
+                dst_node)))))
     /\ UNCHANGED<<GlobalTxnCount>>
 
 --------------------------------------------------------------------------------
@@ -358,9 +353,10 @@ LimboWritePromote(nid) ==
                  "New PROMOTE must have term >= old PROMOTE term")
        /\ Assert(~PromoteIsValid(old_promote) \/ old_promote.lsn < entry.lsn,
                  "New PROMOTE must have LSN > old PROMOTE LSN")
-       /\ Nodes' = NodeSetLimboPromotions(nid, new_promotions,
-                    NodeSetNextLSN(nid, node.next_lsn + 1,
-                    NodeJournalAppend(nid, entry)))
+       /\ Nodes' = NodesUpdate(nid,
+                    SetLimboPromotions(new_promotions,
+                    SetNextLSN(node.next_lsn + 1,
+                    JournalAppend(entry, node))))
     /\ UNCHANGED<<GlobalTxnCount>>
 
 \* Leader confirms PROMOTE after quorum receives it
@@ -399,15 +395,16 @@ LimboConfirmPromote(nid) ==
        /\ Assert(\A i \in NodeIDs:
                    promote_entry.confirmed_vclock[i] >= node.limbo_vclock[i],
                  "PROMOTE's confirmed_vclock must be >= limbo vclock")
-       /\ Nodes' = NodeSetLimboTerm(nid, promote_entry.raft_term,
-                    NodeSetLimboOwner(nid, nid,
-                    NodeSetLimboVclock(nid, promote_entry.confirmed_vclock,
-                    NodeSetLimboPromotions(nid, new_promotions,
-                    NodeSetLimboQueue(nid, <<>>,
-                    NodeSetData(nid, new_data,
-                    NodeSetNextLSN(nid, node.next_lsn + 1,
-                    NodeSetLimboState(nid, LimboStateLeader,
-                    NodeJournalAppend(nid, confirm_entry)))))))))
+       /\ Nodes' = NodesUpdate(nid,
+                    SetLimboTerm(promote_entry.raft_term,
+                    SetLimboOwner(nid,
+                    SetLimboVclock(promote_entry.confirmed_vclock,
+                    SetLimboPromotions(new_promotions,
+                    SetLimboQueue(<<>>,
+                    SetData(new_data,
+                    SetNextLSN(node.next_lsn + 1,
+                    SetLimboState(LimboStateLeader,
+                    JournalAppend(confirm_entry, node))))))))))
     /\ UNCHANGED<<GlobalTxnCount>>
 
 --------------------------------------------------------------------------------
@@ -425,9 +422,10 @@ LimboCreateTransaction(nid) ==
     /\ ArrIsEmpty(node.limbo_queue)
     \* ---
     /\ GlobalTxnCount' = GlobalTxnCount + 1
-    /\ Nodes' = NodeSetLimboQueue(nid, ArrAppend(entry, node.limbo_queue),
-                    NodeSetNextLSN(nid, node.next_lsn + 1,
-                    NodeJournalAppend(nid, entry)))
+    /\ Nodes' = NodesUpdate(nid,
+                SetLimboQueue(ArrAppend(entry, node.limbo_queue),
+                SetNextLSN(node.next_lsn + 1,
+                JournalAppend(entry, node))))
 
 \* Limbo leader confirms transaction after quorum receives it
 LimboConfirmTransaction(nid) ==
@@ -450,11 +448,12 @@ LimboConfirmTransaction(nid) ==
           IN
           /\ Assert(txn_entry.lsn >= old_vclock_lsn,
                     "Vclock LSN must not decrease")
-          /\ Nodes' = NodeSetLimboQueue(nid, <<>>,
-                       NodeSetLimboVclock(nid, new_vclock,
-                       NodeSetData(nid, ArrAppend(txn_entry, node.data),
-                       NodeSetNextLSN(nid, node.next_lsn + 1,
-                       NodeJournalAppend(nid, confirm_entry)))))
+          /\ Nodes' = NodesUpdate(nid,
+                       SetLimboQueue(<<>>,
+                       SetLimboVclock(new_vclock,
+                       SetData(ArrAppend(txn_entry, node.data),
+                       SetNextLSN(node.next_lsn + 1,
+                       JournalAppend(confirm_entry, node))))))
     /\ UNCHANGED<<GlobalTxnCount>>
 
 --------------------------------------------------------------------------------
@@ -477,7 +476,7 @@ ReplicatePromote(entry, dst_nid) ==
     /\ IF entry.raft_term <= dst_node.limbo_term
        THEN
            \* Ignore old PROMOTE (already confirmed)
-           Nodes' = NodeJournalAppend(dst_nid, entry)
+           Nodes' = NodesUpdate(dst_nid, JournalAppend(entry, dst_node))
        ELSE
            \* New term PROMOTE - store directly
            LET old_promote == dst_node.limbo_promotions[entry.origin_id]
@@ -487,9 +486,10 @@ ReplicatePromote(entry, dst_nid) ==
                      "New PROMOTE must have term >= old PROMOTE term")
            /\ Assert(~PromoteIsValid(old_promote) \/ old_promote.lsn < entry.lsn,
                      "New PROMOTE must have LSN > old PROMOTE LSN")
-           /\ Nodes' = NodeSetLimboState(dst_nid, LimboStateReplica,
-                        NodeSetLimboPromotions(dst_nid, new_promotions,
-                        NodeJournalAppend(dst_nid, entry)))
+           /\ Nodes' = NodesUpdate(dst_nid,
+                        SetLimboState(LimboStateReplica,
+                        SetLimboPromotions(new_promotions,
+                        JournalAppend(entry, dst_node))))
 
 \* Apply CONFIRM on PROMOTE entry to destination node
 ReplicateConfirmPromote(entry, dst_nid, promote) ==
@@ -516,13 +516,14 @@ ReplicateConfirmPromote(entry, dst_nid, promote) ==
     /\ Assert(\A i \in NodeIDs:
                 promote.confirmed_vclock[i] >= dst_node.limbo_vclock[i],
               "PROMOTE's confirmed_vclock must be >= limbo vclock")
-    /\ Nodes' = NodeSetLimboTerm(dst_nid, promote.raft_term,
-                    NodeSetLimboOwner(dst_nid, new_owner,
-                    NodeSetLimboVclock(dst_nid, promote.confirmed_vclock,
-                    NodeSetLimboPromotions(dst_nid, new_promotions,
-                    NodeSetLimboQueue(dst_nid, <<>>,
-                    NodeSetData(dst_nid, new_data,
-                    NodeJournalAppend(dst_nid, entry)))))))
+    /\ Nodes' = NodesUpdate(dst_nid,
+                 SetLimboTerm(promote.raft_term,
+                 SetLimboOwner(new_owner,
+                 SetLimboVclock(promote.confirmed_vclock,
+                 SetLimboPromotions(new_promotions,
+                 SetLimboQueue(<<>>,
+                 SetData(new_data,
+                 JournalAppend(entry, dst_node))))))))
 
 \* Apply CONFIRM on transaction entry to destination node
 ReplicateConfirmTransaction(entry, dst_nid) ==
@@ -536,10 +537,11 @@ ReplicateConfirmTransaction(entry, dst_nid) ==
              "Transaction origin must match CONFIRM owner")
     /\ Assert(entry.confirm_lsn >= dst_node.limbo_vclock[entry.owner_id],
              "Vclock LSN must not decrease")
-    /\ Nodes' = NodeSetLimboVclock(dst_nid, new_vclock,
-                    NodeSetLimboQueue(dst_nid, <<>>,
-                    NodeSetData(dst_nid, ArrAppend(txn_entry, dst_node.data),
-                    NodeJournalAppend(dst_nid, entry))))
+    /\ Nodes' = NodesUpdate(dst_nid,
+                 SetLimboVclock(new_vclock,
+                 SetLimboQueue(<<>>,
+                 SetData(ArrAppend(txn_entry, dst_node.data),
+                 JournalAppend(entry, dst_node)))))
 
 \* Apply a CONFIRM entry to destination node
 ReplicateConfirm(entry, dst_nid) ==
@@ -550,7 +552,7 @@ ReplicateConfirm(entry, dst_nid) ==
     IF PromoteIsValid(promote)
     THEN ReplicateConfirmPromote(entry, dst_nid, promote)
     ELSE IF entry.confirm_lsn <= current_lsn
-    THEN Nodes' = NodeJournalAppend(dst_nid, entry)
+    THEN Nodes' = NodesUpdate(dst_nid, JournalAppend(entry, dst_node))
     ELSE IF entry.owner_id = dst_node.limbo_owner
     THEN ReplicateConfirmTransaction(entry, dst_nid)
     ELSE Assert(FALSE, "Invalid CONFIRM from non-owner")
@@ -564,12 +566,13 @@ ReplicateTransaction(entry, dst_nid) ==
     IF is_from_owner
     THEN
         \* Valid transaction from owner
-        Nodes' = NodeSetLimboQueue(dst_nid, ArrAppend(entry, dst_node.limbo_queue),
-                     NodeJournalAppend(dst_nid, entry))
+        Nodes' = NodesUpdate(dst_nid,
+                  SetLimboQueue(ArrAppend(entry, dst_node.limbo_queue),
+                  JournalAppend(entry, dst_node)))
     ELSE IF is_old_term
     THEN
         \* Ignore old term transaction
-        Nodes' = NodeJournalAppend(dst_nid, entry)
+        Nodes' = NodesUpdate(dst_nid, JournalAppend(entry, dst_node))
     ELSE
         \* Invalid: transaction from non-owner in current/future term
         Assert(FALSE, "Invalid transaction from non-owner")
