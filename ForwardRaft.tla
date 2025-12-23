@@ -414,17 +414,18 @@ LimboConfirmPromote(nid) ==
 \* Limbo leader creates a new transaction
 LimboCreateTransaction(nid) ==
     LET node == Nodes[nid]
-        entry == EntryNewTransaction(nid, node.next_lsn, node.limbo_term)
     IN
     /\ GlobalTxnCount < MaxTransactions
     /\ node.limbo_state = LimboStateLeader
     /\ ArrIsEmpty(node.limbo_queue)
     \* ---
-    /\ GlobalTxnCount' = GlobalTxnCount + 1
-    /\ Nodes' = NodesUpdate(nid,
-                SetLimboQueue(ArrAppend(entry, node.limbo_queue),
-                SetNextLSN(node.next_lsn + 1,
-                JournalAppend(entry, node))))
+    /\ LET entry == EntryNewTransaction(nid, node.next_lsn, node.limbo_term)
+       IN
+       /\ GlobalTxnCount' = GlobalTxnCount + 1
+       /\ Nodes' = NodesUpdate(nid,
+                   SetLimboQueue(ArrAppend(entry, node.limbo_queue),
+                   SetNextLSN(node.next_lsn + 1,
+                   JournalAppend(entry, node))))
 
 \* Limbo leader confirms transaction after quorum receives it
 LimboConfirmTransaction(nid) ==
