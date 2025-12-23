@@ -202,12 +202,6 @@ RemovePromotionsUpToTerm(promotions, term) ==
         THEN PromoteEmpty
         ELSE promotions[nid]]
 
-\* Check if limbo state should be leader
-IsLimboLeader(node) ==
-    /\ node.raft_state = RaftStateLeader
-    /\ node.raft_term = node.limbo_term
-    /\ node.limbo_owner = node.node_id
-
 \* Count how many nodes have a specific entry and have term <= given term
 \* This ensures we only count acknowledgments from nodes that haven't moved to a higher term
 CountNodesWithEntry(entry, max_term) ==
@@ -228,16 +222,8 @@ NodeCountFullReplicas(nid, max_term) ==
         /\ JournalIsFullyReplicatedTo(node, Nodes[other_nid])
         /\ Nodes[other_nid].raft_term <= max_term})
 
-\* Count how many nodes' journals are fully replicated to this node
-\* This checks if this node has all the data from other nodes
-NodeCountReplicasDataHere(nid, max_term) ==
-    Cardinality({other_nid \in NodeIDs:
-        /\ JournalIsFullyReplicatedTo(Nodes[other_nid], Nodes[nid])
-        /\ Nodes[other_nid].raft_term <= max_term})
-
 \* Create new node state
-NodeNew(nid) == [
-    node_id |-> nid,
+NodeNew == [
     journal |-> <<>>,
     raft_term |-> 1,
     raft_vote |-> 0,
@@ -254,7 +240,7 @@ NodeNew(nid) == [
 
 \* Initialize state
 Init ==
-    /\ Nodes = [nid \in NodeIDs |-> NodeNew(nid)]
+    /\ Nodes = [nid \in NodeIDs |-> NodeNew]
     /\ GlobalTxnCount = 0
 
 --------------------------------------------------------------------------------
@@ -388,7 +374,6 @@ LimboConfirmPromote(nid) ==
     /\ promote_entry.raft_term = node.raft_term
     \* ---
     /\ CountNodesWithEntry(promote_entry, node.raft_term) >= Quorum
-    \* /\ NodeCountReplicasDataHere(nid, node.raft_term) >= Quorum
     /\ Assert(promote_entry.raft_term > node.limbo_term,
               "Local pending promote's term is always bigger than the last confirmed limbo term")
     /\ Assert(ArrLen(node.limbo_queue) <= 1,
