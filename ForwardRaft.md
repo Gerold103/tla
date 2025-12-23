@@ -218,6 +218,8 @@ While the system is running, we must keep an invariant true, that for every 2 no
 
 To protect the system from never being able to start new transactions due to constant term bumps we must add a limitation somehow that eventually the system will elect a leader and a leader will eventually start a new transaction. Weak fairness is probably be enough, if it helps to prevent infinite term bumps with no other progress.
 
+The TLA+ code must be optimized. You must postpone and avoid any calculations where it is possible. For example, if an expression in LET is only used after some checks which don't need this expression, then postpone this LET.
+
 ## End
 
 The spec might be incomplete or can be missing things. Be critical. Do not blindly rush to execution and don't assume things that aren't 100% known. Prior to implementation explain the task back to me and ask questions in case something needs clarification. Do not be agreeable with everything. Be attentive and critical.

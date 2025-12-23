@@ -256,7 +256,7 @@ NodeBumpTerm(nid) ==
     LET node == Nodes[nid]
     IN
     /\ ~ShouldStop
-    /\ node.raft_state \in {RaftStateFollower, RaftStateCandidate}
+    /\ node.raft_state = RaftStateFollower \/ node.raft_state = RaftStateCandidate
     \* ---
     /\ Nodes' = NodeSetRaftTerm(nid, node.raft_term + 1,
                     NodeSetRaftVote(nid, nid,
@@ -281,12 +281,10 @@ NodeGrantVote(voter_nid, candidate_nid) ==
 
 \* Node becomes Raft leader after winning election (receiving quorum of votes)
 NodeBecomeLeader(nid) ==
-    LET node == Nodes[nid]
-        votes == Cardinality({voter_nid \in NodeIDs:
-            Nodes[voter_nid].raft_vote = nid /\ Nodes[voter_nid].raft_term = node.raft_term})
-    IN
-    /\ node.raft_state = RaftStateCandidate
-    /\ votes >= Quorum
+    /\ Nodes[nid].raft_state = RaftStateCandidate
+    /\ LET term == Nodes[nid].raft_term
+       IN Cardinality({voter_nid \in NodeIDs:
+              Nodes[voter_nid].raft_vote = nid /\ Nodes[voter_nid].raft_term = term}) >= Quorum
     \* ---
     /\ Nodes' = NodeSetRaftState(nid, RaftStateLeader, Nodes)
     /\ UNCHANGED<<GlobalTxnCount>>
@@ -304,13 +302,11 @@ NodeStepDown(nid) ==
 
 \* Node observes higher term from another node and steps down
 NodeObserveHigherTerm(dst_nid, src_nid) ==
-    LET dst_node == Nodes[dst_nid]
-        src_node == Nodes[src_nid]
+    LET src_term == Nodes[src_nid].raft_term
     IN
-    /\ src_nid # dst_nid
-    /\ src_node.raft_term > dst_node.raft_term
+    /\ src_term > Nodes[dst_nid].raft_term
     \* ---
-    /\ Nodes' = NodeSetRaftTerm(dst_nid, src_node.raft_term,
+    /\ Nodes' = NodeSetRaftTerm(dst_nid, src_term,
                     NodeSetRaftVote(dst_nid, 0,
                     NodeSetRaftState(dst_nid, RaftStateFollower,
                     NodeSetLimboState(dst_nid, LimboStateReplica,
