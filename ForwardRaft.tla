@@ -157,6 +157,11 @@ PromoteEmpty == [null |-> NULL]
 \* Promotions dictionary operations
 PromotionsEmpty == [i \in NodeIDs |-> PromoteEmpty]
 PromotionsSet(nid, promote, promotions) == [promotions EXCEPT ![nid] = promote]
+PromotionsRemoveUpToTerm(term, promotions) ==
+    [nid \in DOMAIN(promotions) |->
+        IF PromoteIsValid(promotions[nid]) /\ promotions[nid].raft_term <= term
+        THEN PromoteEmpty
+        ELSE promotions[nid]]
 
 \* Check if node has an entry in its journal
 HasEntry(node, entry) ==
@@ -191,13 +196,6 @@ GetLatestPromotion(promotions) ==
                     promotions[nid].raft_term >= promotions[otherNid].raft_term
          IN promotions[latestNid]
     ELSE PromoteEmpty
-
-\* Remove promotions with term <= given term
-RemovePromotionsUpToTerm(promotions, term) ==
-    [nid \in DOMAIN(promotions) |->
-        IF PromoteIsValid(promotions[nid]) /\ promotions[nid].raft_term <= term
-        THEN PromoteEmpty
-        ELSE promotions[nid]]
 
 \* Count how many nodes have a specific entry and have term <= given term
 \* This ensures we only count acknowledgments from nodes that haven't moved to a higher term
@@ -501,7 +499,7 @@ ReplicateConfirmPromote(entry, dst_nid, promote) ==
         \* Always clear queue (commit if covered, rollback if not)
         new_data == IF should_commit THEN ArrAppend(txn_entry, dst_node.data) ELSE dst_node.data
         \* Remove promotions with term <= confirmed promote's term, keep higher ones
-        new_promotions == RemovePromotionsUpToTerm(dst_node.limbo_promotions, promote.raft_term)
+        new_promotions == PromotionsRemoveUpToTerm(promote.raft_term, dst_node.limbo_promotions)
     IN
     /\ Assert(ArrLen(dst_node.limbo_queue) <= 1,
              "Too many transactions in queue during PROMOTE confirm")
