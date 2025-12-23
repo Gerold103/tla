@@ -175,23 +175,25 @@ FindPendingPromote(promotions, nid, confirm_lsn) ==
 
 \* Get the oldest (smallest term) valid promotion from the dictionary
 GetOldestPromotion(promotions) ==
-    LET validNids == {nid \in DOMAIN(promotions): PromoteIsValid(promotions[nid])}
-    IN IF validNids = {}
-       THEN PromoteEmpty
-       ELSE LET oldestNid == CHOOSE nid \in validNids:
-                \A otherNid \in validNids:
+    IF \E nid \in DOMAIN(promotions): PromoteIsValid(promotions[nid])
+    THEN LET oldestNid == CHOOSE nid \in DOMAIN(promotions):
+                /\ PromoteIsValid(promotions[nid])
+                /\ \A otherNid \in DOMAIN(promotions):
+                    PromoteIsValid(promotions[otherNid]) =>
                     promotions[nid].raft_term <= promotions[otherNid].raft_term
-            IN promotions[oldestNid]
+         IN promotions[oldestNid]
+    ELSE PromoteEmpty
 
 \* Get the latest (largest term) valid promotion from the dictionary
 GetLatestPromotion(promotions) ==
-    LET validNids == {nid \in DOMAIN(promotions): PromoteIsValid(promotions[nid])}
-    IN IF validNids = {}
-       THEN PromoteEmpty
-       ELSE LET latestNid == CHOOSE nid \in validNids:
-                \A otherNid \in validNids:
+    IF \E nid \in DOMAIN(promotions): PromoteIsValid(promotions[nid])
+    THEN LET latestNid == CHOOSE nid \in DOMAIN(promotions):
+                /\ PromoteIsValid(promotions[nid])
+                /\ \A otherNid \in DOMAIN(promotions):
+                    PromoteIsValid(promotions[otherNid]) =>
                     promotions[nid].raft_term >= promotions[otherNid].raft_term
-            IN promotions[latestNid]
+         IN promotions[latestNid]
+    ELSE PromoteEmpty
 
 \* Remove promotions with term <= given term
 RemovePromotionsUpToTerm(promotions, term) ==
