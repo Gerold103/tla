@@ -154,6 +154,10 @@ PromoteIsValid(promote) ==
 \* Create an invalid/empty promotion entry
 PromoteEmpty == [null |-> NULL]
 
+\* Promotions dictionary operations
+PromotionsEmpty == [i \in NodeIDs |-> PromoteEmpty]
+PromotionsSet(nid, promote, promotions) == [promotions EXCEPT ![nid] = promote]
+
 \* Check if node has an entry in its journal
 HasEntry(node, entry) ==
     \E i \in DOMAIN(node.journal):
@@ -225,7 +229,7 @@ NodeNew == [
     limbo_term |-> 1,
     limbo_owner |-> InitialLimboOwner,
     limbo_vclock |-> [i \in NodeIDs |-> -1],
-    limbo_promotions |-> [i \in NodeIDs |-> PromoteEmpty],
+    limbo_promotions |-> PromotionsEmpty,
     limbo_queue |-> <<>>,
     data |-> <<>>,
     next_lsn |-> 1
@@ -345,7 +349,7 @@ LimboWritePromote(nid) ==
                VclockSet(base_vclock, node.limbo_owner, confirm_lsn)
            )
            old_promote == node.limbo_promotions[nid]
-           new_promotions == [node.limbo_promotions EXCEPT ![nid] = entry]
+           new_promotions == PromotionsSet(nid, entry, node.limbo_promotions)
        IN
        /\ Assert(~PromoteIsValid(old_promote) \/ old_promote.raft_term <= entry.raft_term,
                  "New PROMOTE must have term >= old PROMOTE term")
@@ -388,7 +392,7 @@ LimboConfirmPromote(nid) ==
            )
            new_data == IF should_commit THEN ArrAppend(txn_entry, node.data) ELSE node.data
            \* Clear all promotions (local confirmation)
-           new_promotions == [i \in NodeIDs |-> PromoteEmpty]
+           new_promotions == PromotionsEmpty
        IN
        /\ Assert(\A i \in NodeIDs:
                    promote_entry.confirmed_vclock[i] >= node.limbo_vclock[i],
@@ -478,7 +482,7 @@ ReplicatePromote(entry, dst_nid) ==
        ELSE
            \* New term PROMOTE - store directly
            LET old_promote == dst_node.limbo_promotions[entry.origin_id]
-               new_promotions == [dst_node.limbo_promotions EXCEPT ![entry.origin_id] = entry]
+               new_promotions == PromotionsSet(entry.origin_id, entry, dst_node.limbo_promotions)
            IN
            /\ Assert(~PromoteIsValid(old_promote) \/ old_promote.raft_term <= entry.raft_term,
                      "New PROMOTE must have term >= old PROMOTE term")
