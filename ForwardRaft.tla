@@ -316,6 +316,8 @@ LimboWritePromote(nid) ==
     /\ node.raft_state = RaftStateLeader
     /\ node.raft_term > node.limbo_term
     /\ NodeCountFullReplicas(nid, node.raft_term) >= Quorum
+    /\ LET old_promote == node.limbo_promotions[nid]
+       IN IF PromoteIsValid(old_promote) THEN old_promote.raft_term < node.raft_term ELSE TRUE
     /\ Assert(ArrLen(node.limbo_queue) <= 1,
               "Too many transactions in limbo queue during PROMOTE")
     \* ---
