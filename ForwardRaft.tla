@@ -167,15 +167,6 @@ PromotionsFindPending(nid, confirm_lsn, promotions) ==
     IN IF PromoteIsValid(promote) /\ promote.confirm_lsn = confirm_lsn
        THEN promote
        ELSE PromoteEmpty
-PromotionsGetOldest(promotions) ==
-    IF \E nid \in DOMAIN(promotions): PromoteIsValid(promotions[nid])
-    THEN LET oldestNid == CHOOSE nid \in DOMAIN(promotions):
-                /\ PromoteIsValid(promotions[nid])
-                /\ \A otherNid \in DOMAIN(promotions):
-                    PromoteIsValid(promotions[otherNid]) =>
-                    promotions[nid].raft_term <= promotions[otherNid].raft_term
-         IN promotions[oldestNid]
-    ELSE PromoteEmpty
 PromotionsGetLatest(promotions) ==
     IF \E nid \in DOMAIN(promotions): PromoteIsValid(promotions[nid])
     THEN LET latestNid == CHOOSE nid \in DOMAIN(promotions):
@@ -321,12 +312,11 @@ LimboWritePromote(nid) ==
     /\ Assert(ArrLen(node.limbo_queue) <= 1,
               "Too many transactions in limbo queue during PROMOTE")
     \* ---
-    /\ LET oldest_promote == PromotionsGetOldest(node.limbo_promotions)
-           latest_promote == PromotionsGetLatest(node.limbo_promotions)
-           has_pending == PromoteIsValid(oldest_promote)
-           \* confirm_lsn: use oldest promote's if exists, otherwise queue/vclock
+    /\ LET latest_promote == PromotionsGetLatest(node.limbo_promotions)
+           has_pending == PromoteIsValid(latest_promote)
+           \* confirm_lsn: use latest (previous) promote's if exists, otherwise queue/vclock
            confirm_lsn == IF has_pending
-                          THEN oldest_promote.confirm_lsn
+                          THEN latest_promote.confirm_lsn
                           ELSE IF ~ArrIsEmpty(node.limbo_queue)
                                THEN ArrLast(node.limbo_queue).lsn
                                ELSE node.limbo_vclock[node.limbo_owner]
