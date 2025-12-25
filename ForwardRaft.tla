@@ -314,6 +314,10 @@ LimboWritePromote(nid) ==
     \* ---
     /\ LET latest_promote == PromotionsGetLatest(node.limbo_promotions)
            has_pending == PromoteIsValid(latest_promote)
+           \* prev_owner: use latest (previous) promote's origin_id if exists, otherwise current limbo owner
+           prev_owner == IF has_pending
+                         THEN latest_promote.origin_id
+                         ELSE node.limbo_owner
            \* confirm_lsn: use latest (previous) promote's if exists, otherwise queue/vclock
            confirm_lsn == IF has_pending
                           THEN latest_promote.confirm_lsn
@@ -328,9 +332,9 @@ LimboWritePromote(nid) ==
                nid,
                node.next_lsn,
                node.raft_term,
-               node.limbo_owner,
+               prev_owner,
                confirm_lsn,
-               VclockSet(base_vclock, node.limbo_owner, confirm_lsn)
+               VclockSet(base_vclock, prev_owner, confirm_lsn)
            )
            old_promote == node.limbo_promotions[nid]
            new_promotions == PromotionsSet(nid, entry, node.limbo_promotions)
