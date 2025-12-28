@@ -316,7 +316,7 @@ LimboWritePromote(nid) ==
            has_pending == PromoteIsValid(latest_promote)
            \* prev_owner: use latest (previous) promote's origin_id if exists, otherwise current limbo owner
            prev_owner == IF has_pending
-                         THEN latest_promote.origin_id
+                         THEN latest_promote.prev_owner
                          ELSE node.limbo_owner
            \* confirm_lsn: use latest (previous) promote's if exists, otherwise queue/vclock
            confirm_lsn == IF has_pending
