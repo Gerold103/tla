@@ -24,8 +24,8 @@ EXTENDS TLC, Integers, Sequences, FiniteSets
 \* Node IDs in the cluster
 CONSTANT NodeIDs
 
-\* Maximum number of transactions to create globally
-CONSTANT MaxTransactions
+\* All transactions to execute (set of identifiers)
+CONSTANT AllTransactions
 
 \* Maximum term allowed before stopping
 CONSTANT MaxTerm
@@ -50,11 +50,16 @@ CONSTANT RaftStateLeader
 CONSTANT LimboStateReplica
 CONSTANT LimboStateLeader
 
-\* Symmetry - all nodes are equivalent
-Perms == Permutations(NodeIDs)
+\* Transaction result types
+CONSTANT TxnResultCommit
+CONSTANT TxnResultRollback
+CONSTANT TxnResultUnknown
+
+\* Symmetry - all nodes and transactions are equivalent
+Perms == Permutations(NodeIDs) \union Permutations(AllTransactions)
 
 \* Maximum expected journal length per node
-MaxJournalLength == (MaxTerm * 2 + MaxTransactions * 2) * Cardinality(NodeIDs)
+MaxJournalLength == (MaxTerm * 2 + Cardinality(AllTransactions) * 2) * Cardinality(NodeIDs)
 
 --------------------------------------------------------------------------------
 \*
@@ -64,10 +69,13 @@ MaxJournalLength == (MaxTerm * 2 + MaxTransactions * 2) * Cardinality(NodeIDs)
 \* Per-node state
 VARIABLE Nodes
 
-\* Global counter of created transactions
-VARIABLE GlobalTxnCount
+\* Remaining transactions to create (set)
+VARIABLE TransactionsToDo
 
-vars == <<Nodes, GlobalTxnCount>>
+\* Completed transactions: map from transaction data -> result (commit/rollback)
+VARIABLE TransactionsDone
+
+vars == <<Nodes, TransactionsToDo, TransactionsDone>>
 
 --------------------------------------------------------------------------------
 \*
@@ -100,6 +108,17 @@ NodesUpdate(nid, node) == [Nodes EXCEPT ![nid] = node]
 \* Vclock operations
 VclockSet(vclock, nid, val) == [vclock EXCEPT ![nid] = val]
 
+\* Transaction result tracking helpers
+TxnMarkCommit(txn_data) ==
+    /\ Assert(TransactionsDone[txn_data] \in {TxnResultUnknown, TxnResultCommit},
+             "Transaction cannot be committed after rollback")
+    /\ TransactionsDone' = [TransactionsDone EXCEPT ![txn_data] = TxnResultCommit]
+
+TxnMarkRollback(txn_data) ==
+    /\ Assert(TransactionsDone[txn_data] \in {TxnResultUnknown, TxnResultRollback},
+             "Transaction cannot be rolled back after commit")
+    /\ TransactionsDone' = [TransactionsDone EXCEPT ![txn_data] = TxnResultRollback]
+
 --------------------------------------------------------------------------------
 \*
 \* Constructors and helpers
@@ -112,14 +131,15 @@ Quorum == (Cardinality(NodeIDs) \div 2) + 1
 \* (either max term reached or all transactions done)
 ShouldStop ==
     \/ \E nid \in NodeIDs: Nodes[nid].raft_term >= MaxTerm
-    \/ GlobalTxnCount >= MaxTransactions
+    \/ \A t \in AllTransactions: TransactionsDone[t] # TxnResultUnknown
 
 \* Create a new transaction entry
-EntryNewTransaction(origin_id, lsn, limbo_term) == [
+EntryNewTransaction(origin_id, lsn, limbo_term, data) == [
     type |-> EntryTypeTransaction,
     origin_id |-> origin_id,
     lsn |-> lsn,
-    limbo_term |-> limbo_term
+    limbo_term |-> limbo_term,
+    data |-> data
 ]
 
 \* Create a new PROMOTE entry
@@ -221,7 +241,8 @@ NodeNew == [
 \* Initialize state
 Init ==
     /\ Nodes = [nid \in NodeIDs |-> NodeNew]
-    /\ GlobalTxnCount = 0
+    /\ TransactionsToDo = AllTransactions
+    /\ TransactionsDone = [t \in AllTransactions |-> TxnResultUnknown]
 
 --------------------------------------------------------------------------------
 \*
@@ -241,7 +262,7 @@ NodeBumpTerm(nid) ==
                 SetRaftState(RaftStateCandidate,
                 SetLimboState(LimboStateReplica,
                 node)))))
-    /\ UNCHANGED<<GlobalTxnCount>>
+    /\ UNCHANGED<<TransactionsToDo, TransactionsDone>>
 
 \* A node grants its vote to a candidate
 NodeGrantVote(voter_nid, candidate_nid) ==
@@ -255,7 +276,7 @@ NodeGrantVote(voter_nid, candidate_nid) ==
     /\ JournalIsFullyReplicatedTo(voter, candidate)
     \* ---
     /\ Nodes' = NodesUpdate(voter_nid, SetRaftVote(candidate_nid, voter))
-    /\ UNCHANGED<<GlobalTxnCount>>
+    /\ UNCHANGED<<TransactionsToDo, TransactionsDone>>
 
 \* Node becomes Raft leader after winning election (receiving quorum of votes)
 NodeBecomeLeader(nid) ==
@@ -265,7 +286,7 @@ NodeBecomeLeader(nid) ==
               Nodes[voter_nid].raft_vote = nid /\ Nodes[voter_nid].raft_term = term}) >= Quorum
     \* ---
     /\ Nodes' = NodesUpdate(nid, SetRaftState(RaftStateLeader, Nodes[nid]))
-    /\ UNCHANGED<<GlobalTxnCount>>
+    /\ UNCHANGED<<TransactionsToDo, TransactionsDone>>
 
 \* Node randomly steps down from leader (simulating crash/restart)
 NodeStepDown(nid) ==
@@ -277,7 +298,7 @@ NodeStepDown(nid) ==
                 SetRaftState(RaftStateFollower,
                 SetLimboState(LimboStateReplica,
                 node)))
-    /\ UNCHANGED<<GlobalTxnCount>>
+    /\ UNCHANGED<<TransactionsToDo, TransactionsDone>>
 
 \* Node observes higher term from another node and steps down
 NodeObserveHigherTerm(dst_nid, src_nid) ==
@@ -293,7 +314,7 @@ NodeObserveHigherTerm(dst_nid, src_nid) ==
                 SetRaftState(RaftStateFollower,
                 SetLimboState(LimboStateReplica,
                 dst_node)))))
-    /\ UNCHANGED<<GlobalTxnCount>>
+    /\ UNCHANGED<<TransactionsToDo, TransactionsDone>>
 
 --------------------------------------------------------------------------------
 \*
@@ -347,7 +368,7 @@ LimboWritePromote(nid) ==
                     SetLimboPromotions(new_promotions,
                     SetNextLSN(node.next_lsn + 1,
                     JournalAppend(entry, node))))
-    /\ UNCHANGED<<GlobalTxnCount>>
+    /\ UNCHANGED<<TransactionsToDo, TransactionsDone>>
 
 \* Leader confirms PROMOTE after quorum receives it
 LimboConfirmPromote(nid) ==
@@ -377,11 +398,16 @@ LimboConfirmPromote(nid) ==
                promote_entry.prev_owner,
                promote_entry.confirm_lsn
            )
-           new_data == IF should_commit THEN ArrAppend(txn_entry, node.data) ELSE node.data
+           new_data == IF should_commit THEN ArrAppend(txn_entry.data, node.data) ELSE node.data
        IN
        /\ Assert(\A i \in NodeIDs:
                    promote_entry.confirmed_vclock[i] >= node.limbo_vclock[i],
                  "PROMOTE's confirmed_vclock must be >= limbo vclock")
+       /\ IF has_txn
+          THEN IF should_commit
+               THEN TxnMarkCommit(txn_entry.data)
+               ELSE TxnMarkRollback(txn_entry.data)
+          ELSE UNCHANGED TransactionsDone
        /\ Nodes' = NodesUpdate(nid,
                     SetLimboTerm(promote_entry.raft_term,
                     SetLimboOwner(nid,
@@ -392,7 +418,7 @@ LimboConfirmPromote(nid) ==
                     SetNextLSN(node.next_lsn + 1,
                     SetLimboState(LimboStateLeader,
                     JournalAppend(confirm_entry, node))))))))))
-    /\ UNCHANGED<<GlobalTxnCount>>
+    /\ UNCHANGED<<TransactionsToDo>>
 
 --------------------------------------------------------------------------------
 \*
@@ -403,17 +429,18 @@ LimboConfirmPromote(nid) ==
 LimboCreateTransaction(nid) ==
     LET node == Nodes[nid]
     IN
-    /\ GlobalTxnCount < MaxTransactions
     /\ node.limbo_state = LimboStateLeader
     /\ ArrIsEmpty(node.limbo_queue)
     \* ---
-    /\ LET entry == EntryNewTransaction(nid, node.next_lsn, node.limbo_term)
-       IN
-       /\ GlobalTxnCount' = GlobalTxnCount + 1
-       /\ Nodes' = NodesUpdate(nid,
-                   SetLimboQueue(ArrAppend(entry, node.limbo_queue),
-                   SetNextLSN(node.next_lsn + 1,
-                   JournalAppend(entry, node))))
+    /\ \E txn_data \in TransactionsToDo:
+        LET entry == EntryNewTransaction(nid, node.next_lsn, node.limbo_term, txn_data)
+        IN
+        /\ TransactionsToDo' = TransactionsToDo \ {txn_data}
+        /\ Nodes' = NodesUpdate(nid,
+                    SetLimboQueue(ArrAppend(entry, node.limbo_queue),
+                    SetNextLSN(node.next_lsn + 1,
+                    JournalAppend(entry, node))))
+        /\ UNCHANGED<<TransactionsDone>>
 
 \* Limbo leader confirms transaction after quorum receives it
 LimboConfirmTransaction(nid) ==
@@ -433,13 +460,14 @@ LimboConfirmTransaction(nid) ==
        IN
        /\ Assert(txn_entry.lsn >= node.limbo_vclock[nid],
                  "Vclock LSN must not decrease")
+       /\ TxnMarkCommit(txn_entry.data)
        /\ Nodes' = NodesUpdate(nid,
                     SetLimboQueue(<<>>,
                     SetLimboVclock(VclockSet(node.limbo_vclock, nid, txn_entry.lsn),
-                    SetData(ArrAppend(txn_entry, node.data),
+                    SetData(ArrAppend(txn_entry.data, node.data),
                     SetNextLSN(node.next_lsn + 1,
                     JournalAppend(confirm_entry, node))))))
-    /\ UNCHANGED<<GlobalTxnCount>>
+    /\ UNCHANGED<<TransactionsToDo>>
 
 --------------------------------------------------------------------------------
 \*
@@ -477,6 +505,7 @@ ReplicatePromote(entry, dst_nid) ==
                         SetLimboState(LimboStateReplica,
                         SetLimboPromotions(new_promotions,
                         JournalAppend(entry, dst_node))))
+    /\ UNCHANGED TransactionsDone
 
 \* Apply CONFIRM on PROMOTE entry to destination node
 ReplicateConfirmPromote(entry, dst_nid, promote) ==
@@ -487,7 +516,7 @@ ReplicateConfirmPromote(entry, dst_nid, promote) ==
         owner_matches == has_txn /\ txn_entry.origin_id = promote.prev_owner
         should_commit == owner_matches /\ txn_entry.lsn <= promote.confirm_lsn
         \* Always clear queue (commit if covered, rollback if not)
-        new_data == IF should_commit THEN ArrAppend(txn_entry, dst_node.data) ELSE dst_node.data
+        new_data == IF should_commit THEN ArrAppend(txn_entry.data, dst_node.data) ELSE dst_node.data
         \* Remove promotions with term <= confirmed promote's term, keep higher ones
         new_promotions == PromotionsRemoveUpToTerm(promote.raft_term, dst_node.limbo_promotions)
     IN
@@ -500,6 +529,11 @@ ReplicateConfirmPromote(entry, dst_nid, promote) ==
     /\ Assert(\A i \in NodeIDs:
                 promote.confirmed_vclock[i] >= dst_node.limbo_vclock[i],
               "PROMOTE's confirmed_vclock must be >= limbo vclock")
+    /\ IF has_txn
+       THEN IF should_commit
+            THEN TxnMarkCommit(txn_entry.data)
+            ELSE TxnMarkRollback(txn_entry.data)
+       ELSE UNCHANGED TransactionsDone
     /\ Nodes' = NodesUpdate(dst_nid,
                  SetLimboTerm(promote.raft_term,
                  SetLimboOwner(promote.origin_id,
@@ -521,10 +555,11 @@ ReplicateConfirmTransaction(entry, dst_nid) ==
              "Transaction origin must match CONFIRM owner")
     /\ Assert(entry.confirm_lsn >= dst_node.limbo_vclock[entry.owner_id],
              "Vclock LSN must not decrease")
+    /\ TxnMarkCommit(txn_entry.data)
     /\ Nodes' = NodesUpdate(dst_nid,
                  SetLimboVclock(new_vclock,
                  SetLimboQueue(<<>>,
-                 SetData(ArrAppend(txn_entry, dst_node.data),
+                 SetData(ArrAppend(txn_entry.data, dst_node.data),
                  JournalAppend(entry, dst_node)))))
 
 \* Apply a CONFIRM entry to destination node
@@ -536,7 +571,8 @@ ReplicateConfirm(entry, dst_nid) ==
     IF PromoteIsValid(promote)
     THEN ReplicateConfirmPromote(entry, dst_nid, promote)
     ELSE IF entry.confirm_lsn <= current_lsn
-    THEN Nodes' = NodesUpdate(dst_nid, JournalAppend(entry, dst_node))
+    THEN /\ Nodes' = NodesUpdate(dst_nid, JournalAppend(entry, dst_node))
+         /\ UNCHANGED TransactionsDone
     ELSE IF entry.owner_id = dst_node.limbo_owner
     THEN ReplicateConfirmTransaction(entry, dst_nid)
     ELSE Assert(FALSE, "Invalid CONFIRM from non-owner")
@@ -550,13 +586,15 @@ ReplicateTransaction(entry, dst_nid) ==
     IF is_from_owner
     THEN
         \* Valid transaction from owner
-        Nodes' = NodesUpdate(dst_nid,
-                  SetLimboQueue(ArrAppend(entry, dst_node.limbo_queue),
-                  JournalAppend(entry, dst_node)))
+        /\ Nodes' = NodesUpdate(dst_nid,
+                     SetLimboQueue(ArrAppend(entry, dst_node.limbo_queue),
+                     JournalAppend(entry, dst_node)))
+        /\ UNCHANGED TransactionsDone
     ELSE IF is_old_term
     THEN
-        \* Ignore old term transaction
-        Nodes' = NodesUpdate(dst_nid, JournalAppend(entry, dst_node))
+        \* Rollback old term transaction
+        /\ TxnMarkRollback(entry.data)
+        /\ Nodes' = NodesUpdate(dst_nid, JournalAppend(entry, dst_node))
     ELSE
         \* Invalid: transaction from non-owner in current/future term
         Assert(FALSE, "Invalid transaction from non-owner")
@@ -574,7 +612,7 @@ ReplicateNextEntry(src_nid, dst_nid) ==
           /\ CASE entry.type = EntryTypePromote -> ReplicatePromote(entry, dst_nid)
                [] entry.type = EntryTypeConfirm -> ReplicateConfirm(entry, dst_nid)
                [] entry.type = EntryTypeTransaction -> ReplicateTransaction(entry, dst_nid)
-    /\ UNCHANGED<<GlobalTxnCount>>
+    /\ UNCHANGED<<TransactionsToDo>>
 --------------------------------------------------------------------------------
 \*
 \* Main specification
@@ -607,11 +645,11 @@ DataConsistencyInvariant ==
             len2 == Len(data2)
             minlen == IF len1 < len2 THEN len1 ELSE len2
         IN \A i \in 1..minlen:
-            EntriesEqual(data1[i], data2[i])
+            data1[i] = data2[i]
 
 \* Terminal state: either all transactions done OR max term reached
 TerminalProperty == <>[](
-    \/ GlobalTxnCount >= MaxTransactions
+    \/ \A t \in AllTransactions: TransactionsDone[t] # TxnResultUnknown
     \/ \E nid \in NodeIDs: Nodes[nid].raft_term >= MaxTerm
 )
 
@@ -643,27 +681,12 @@ LimboQueueOwnerInvariant ==
         IN ~ArrIsEmpty(node.limbo_queue) =>
             ArrLast(node.limbo_queue).origin_id = node.limbo_owner
 
-\* No transaction loss: if a transaction is committed on one node (in data),
-\* and exists in another node's journal, then it must be either committed
-\* (in data) or pending (in limbo_queue) on that other node
-NoTransactionLossInvariant ==
-    \A nid1 \in NodeIDs, nid2 \in NodeIDs:
-        nid1 # nid2 =>
-        LET node1 == Nodes[nid1]
-            node2 == Nodes[nid2]
-        IN \A i \in DOMAIN(node1.data):
-            LET txn == node1.data[i]
-            IN HasEntry(node2, txn) =>
-                \/ (\E j \in DOMAIN(node2.data): EntriesEqual(node2.data[j], txn))
-                \/ (~ArrIsEmpty(node2.limbo_queue) /\ EntriesEqual(ArrLast(node2.limbo_queue), txn))
-
 TotalInvariant ==
     /\ DataConsistencyInvariant
     /\ PromotionQueueInvariant
     /\ JournalLengthInvariant
     /\ LimboLeaderInvariant
     /\ LimboQueueOwnerInvariant
-    /\ NoTransactionLossInvariant
 
 Spec ==
     /\ Init
