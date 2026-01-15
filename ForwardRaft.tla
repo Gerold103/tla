@@ -77,7 +77,10 @@ VARIABLE TransactionsDone
 \* Highest term that has elected a leader (0 initially)
 VARIABLE LeaderTerm
 
-vars == <<Nodes, TransactionsToDo, TransactionsDone, LeaderTerm>>
+\* Terms that have created a transaction: map from term -> 0 or 1
+VARIABLE TransactionTerms
+
+vars == <<Nodes, TransactionsToDo, TransactionsDone, LeaderTerm, TransactionTerms>>
 
 --------------------------------------------------------------------------------
 \*
@@ -251,6 +254,7 @@ Init ==
     /\ TransactionsToDo = AllTransactions
     /\ TransactionsDone = [t \in AllTransactions |-> TxnResultUnknown]
     /\ LeaderTerm = 0
+    /\ TransactionTerms = [term \in 1..MaxTerm |-> 0]
 
 --------------------------------------------------------------------------------
 \*
@@ -268,7 +272,7 @@ NodeBumpTerm(nid) ==
                 SetRaftTerm(node.raft_term + 1,
                 SetLimboState(LimboStateReplica,
                 node)))
-    /\ UNCHANGED<<TransactionsToDo, TransactionsDone, LeaderTerm>>
+    /\ UNCHANGED<<TransactionsToDo, TransactionsDone, LeaderTerm, TransactionTerms>>
 
 \* Node becomes Raft leader after having quorum of nodes with same term and fully replicated journals
 NodeBecomeLeader(nid) ==
@@ -285,7 +289,7 @@ NodeBecomeLeader(nid) ==
     /\ Assert(term > LeaderTerm, "New leader term must be greater than previous leader term")
     /\ Nodes' = NodesUpdate(nid, SetRaftState(RaftStateLeader, node))
     /\ LeaderTerm' = term
-    /\ UNCHANGED<<TransactionsToDo, TransactionsDone>>
+    /\ UNCHANGED<<TransactionsToDo, TransactionsDone, TransactionTerms>>
 
 \* Node randomly steps down from leader (simulating crash/restart)
 NodeStepDown(nid) ==
@@ -297,7 +301,7 @@ NodeStepDown(nid) ==
                 SetRaftState(RaftStateFollower,
                 SetLimboState(LimboStateReplica,
                 node)))
-    /\ UNCHANGED<<TransactionsToDo, TransactionsDone, LeaderTerm>>
+    /\ UNCHANGED<<TransactionsToDo, TransactionsDone, LeaderTerm, TransactionTerms>>
 
 \* Node observes higher term from another node and steps down
 NodeObserveHigherTerm(dst_nid, src_nid) ==
@@ -312,7 +316,7 @@ NodeObserveHigherTerm(dst_nid, src_nid) ==
                 SetRaftState(RaftStateFollower,
                 SetLimboState(LimboStateReplica,
                 dst_node))))
-    /\ UNCHANGED<<TransactionsToDo, TransactionsDone, LeaderTerm>>
+    /\ UNCHANGED<<TransactionsToDo, TransactionsDone, LeaderTerm, TransactionTerms>>
 
 --------------------------------------------------------------------------------
 \*
@@ -364,7 +368,7 @@ LimboWritePromote(nid) ==
                     SetLimboPromotions(new_promotions,
                     SetNextLSN(node.next_lsn + 1,
                     JournalAppend(entry, node))))
-    /\ UNCHANGED<<TransactionsToDo, TransactionsDone, LeaderTerm>>
+    /\ UNCHANGED<<TransactionsToDo, TransactionsDone, LeaderTerm, TransactionTerms>>
 
 \* Leader confirms PROMOTE after quorum receives it
 LimboConfirmPromote(nid) ==
@@ -412,7 +416,7 @@ LimboConfirmPromote(nid) ==
                     SetNextLSN(node.next_lsn + 1,
                     SetLimboState(LimboStateLeader,
                     JournalAppend(confirm_entry, node))))))))))
-    /\ UNCHANGED<<TransactionsToDo, LeaderTerm>>
+    /\ UNCHANGED<<TransactionsToDo, LeaderTerm, TransactionTerms>>
 
 --------------------------------------------------------------------------------
 \*
@@ -425,11 +429,13 @@ LimboCreateTransaction(nid) ==
     IN
     /\ node.limbo_state = LimboStateLeader
     /\ ~TxnIsValid(node.limbo)
+    /\ TransactionTerms[node.limbo_term] = 0
     \* ---
     /\ \E txn_data \in TransactionsToDo:
         LET entry == EntryNewTransaction(nid, node.next_lsn, node.limbo_term, txn_data)
         IN
         /\ TransactionsToDo' = TransactionsToDo \ {txn_data}
+        /\ TransactionTerms' = [TransactionTerms EXCEPT ![node.limbo_term] = 1]
         /\ Nodes' = NodesUpdate(nid,
                     SetLimbo(entry,
                     SetNextLSN(node.next_lsn + 1,
@@ -461,7 +467,7 @@ LimboConfirmTransaction(nid) ==
                     SetData(ArrAppend(txn_entry.data, node.data),
                     SetNextLSN(node.next_lsn + 1,
                     JournalAppend(confirm_entry, node))))))
-    /\ UNCHANGED<<TransactionsToDo, LeaderTerm>>
+    /\ UNCHANGED<<TransactionsToDo, LeaderTerm, TransactionTerms>>
 
 --------------------------------------------------------------------------------
 \*
@@ -604,7 +610,7 @@ ReplicateNextEntry(src_nid, dst_nid) ==
           /\ CASE entry.type = EntryTypePromote -> ReplicatePromote(entry, dst_nid)
                [] entry.type = EntryTypeConfirm -> ReplicateConfirm(entry, dst_nid)
                [] entry.type = EntryTypeTransaction -> ReplicateTransaction(entry, dst_nid)
-    /\ UNCHANGED<<TransactionsToDo, LeaderTerm>>
+    /\ UNCHANGED<<TransactionsToDo, LeaderTerm, TransactionTerms>>
 --------------------------------------------------------------------------------
 \*
 \* Main specification
