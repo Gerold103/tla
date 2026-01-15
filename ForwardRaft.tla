@@ -91,7 +91,7 @@ SetLimboTerm(v, s) == [s EXCEPT !.limbo_term = v]
 SetLimboOwner(v, s) == [s EXCEPT !.limbo_owner = v]
 SetLimboVclock(v, s) == [s EXCEPT !.limbo_vclock = v]
 SetLimboPromotions(v, s) == [s EXCEPT !.limbo_promotions = v]
-SetLimboQueue(v, s) == [s EXCEPT !.limbo_queue = v]
+SetLimbo(v, s) == [s EXCEPT !.limbo = v]
 SetData(v, s) == [s EXCEPT !.data = v]
 SetNextLSN(v, s) == [s EXCEPT !.next_lsn = v]
 JournalAppend(entry, node) == [node EXCEPT !.journal = Append(node.journal, entry)]
@@ -174,6 +174,13 @@ PromoteIsValid(promote) ==
 \* Create an invalid/empty promotion entry
 PromoteEmpty == [null |-> NULL]
 
+\* Check if a transaction entry is valid (has origin_id field)
+TxnIsValid(txn) ==
+    "origin_id" \in DOMAIN txn
+
+\* Create an invalid/empty transaction entry
+TxnEmpty == [null |-> NULL]
+
 \* Promotions dictionary operations
 PromotionsEmpty == [i \in NodeIDs |-> PromoteEmpty]
 PromotionsSet(nid, promote, promotions) == [promotions EXCEPT ![nid] = promote]
@@ -233,7 +240,7 @@ NodeNew == [
     limbo_owner |-> InitialLimboOwner,
     limbo_vclock |-> [i \in NodeIDs |-> -1],
     limbo_promotions |-> PromotionsEmpty,
-    limbo_queue |-> <<>>,
+    limbo |-> TxnEmpty,
     data |-> <<>>,
     next_lsn |-> 1
 ]
@@ -330,8 +337,6 @@ LimboWritePromote(nid) ==
     /\ NodeCountFullReplicas(nid, node.raft_term) >= Quorum
     /\ LET old_promote == node.limbo_promotions[nid]
        IN IF PromoteIsValid(old_promote) THEN old_promote.raft_term < node.raft_term ELSE TRUE
-    /\ Assert(ArrLen(node.limbo_queue) <= 1,
-              "Too many transactions in limbo queue during PROMOTE")
     \* ---
     /\ LET latest_promote == PromotionsGetLatest(node.limbo_promotions)
            has_pending == PromoteIsValid(latest_promote)
@@ -339,11 +344,11 @@ LimboWritePromote(nid) ==
            prev_owner == IF has_pending
                          THEN latest_promote.prev_owner
                          ELSE node.limbo_owner
-           \* confirm_lsn: use latest (previous) promote's if exists, otherwise queue/vclock
+           \* confirm_lsn: use latest (previous) promote's if exists, otherwise limbo/vclock
            confirm_lsn == IF has_pending
                           THEN latest_promote.confirm_lsn
-                          ELSE IF ~ArrIsEmpty(node.limbo_queue)
-                               THEN ArrLast(node.limbo_queue).lsn
+                          ELSE IF TxnIsValid(node.limbo)
+                               THEN node.limbo.lsn
                                ELSE node.limbo_vclock[node.limbo_owner]
            \* confirmed_vclock: use latest promote's if exists, otherwise limbo vclock
            base_vclock == IF has_pending
@@ -382,13 +387,11 @@ LimboConfirmPromote(nid) ==
     \* ---
     /\ Assert(promote_entry.raft_term > node.limbo_term,
               "Local pending promote's term is always bigger than the last confirmed limbo term")
-    /\ Assert(ArrLen(node.limbo_queue) <= 1,
-              "Too many transactions in limbo queue during PROMOTE confirm")
     /\ Assert(\A i \in DOMAIN(node.limbo_promotions):
                   ~PromoteIsValid(node.limbo_promotions[i]) \/ node.limbo_promotions[i].raft_term <= node.raft_term,
               "No promotion can have bigger term than current node term")
-    /\ LET has_txn == ~ArrIsEmpty(node.limbo_queue)
-           txn_entry == IF has_txn THEN ArrLast(node.limbo_queue) ELSE NULL
+    /\ LET has_txn == TxnIsValid(node.limbo)
+           txn_entry == node.limbo
            \* Commit/rollback transaction based on this PROMOTE's confirm_lsn
            owner_matches == has_txn /\ txn_entry.origin_id = promote_entry.prev_owner
            should_commit == owner_matches /\ txn_entry.lsn <= promote_entry.confirm_lsn
@@ -413,7 +416,7 @@ LimboConfirmPromote(nid) ==
                     SetLimboOwner(nid,
                     SetLimboVclock(promote_entry.confirmed_vclock,
                     SetLimboPromotions(PromotionsEmpty,
-                    SetLimboQueue(<<>>,
+                    SetLimbo(TxnEmpty,
                     SetData(new_data,
                     SetNextLSN(node.next_lsn + 1,
                     SetLimboState(LimboStateLeader,
@@ -430,14 +433,14 @@ LimboCreateTransaction(nid) ==
     LET node == Nodes[nid]
     IN
     /\ node.limbo_state = LimboStateLeader
-    /\ ArrIsEmpty(node.limbo_queue)
+    /\ ~TxnIsValid(node.limbo)
     \* ---
     /\ \E txn_data \in TransactionsToDo:
         LET entry == EntryNewTransaction(nid, node.next_lsn, node.limbo_term, txn_data)
         IN
         /\ TransactionsToDo' = TransactionsToDo \ {txn_data}
         /\ Nodes' = NodesUpdate(nid,
-                    SetLimboQueue(ArrAppend(entry, node.limbo_queue),
+                    SetLimbo(entry,
                     SetNextLSN(node.next_lsn + 1,
                     JournalAppend(entry, node))))
         /\ UNCHANGED<<TransactionsDone>>
@@ -445,10 +448,10 @@ LimboCreateTransaction(nid) ==
 \* Limbo leader confirms transaction after quorum receives it
 LimboConfirmTransaction(nid) ==
     LET node == Nodes[nid]
-        txn_entry == ArrLast(node.limbo_queue)
+        txn_entry == node.limbo
     IN
     /\ node.limbo_state = LimboStateLeader
-    /\ ~ArrIsEmpty(node.limbo_queue)
+    /\ TxnIsValid(node.limbo)
     /\ CountNodesWithEntry(txn_entry, node.raft_term) >= Quorum
     \* ---
     /\ LET confirm_entry == EntryNewConfirm(
@@ -462,7 +465,7 @@ LimboConfirmTransaction(nid) ==
                  "Vclock LSN must not decrease")
        /\ TxnMarkCommit(txn_entry.data)
        /\ Nodes' = NodesUpdate(nid,
-                    SetLimboQueue(<<>>,
+                    SetLimbo(TxnEmpty,
                     SetLimboVclock(VclockSet(node.limbo_vclock, nid, txn_entry.lsn),
                     SetData(ArrAppend(txn_entry.data, node.data),
                     SetNextLSN(node.next_lsn + 1,
@@ -510,18 +513,16 @@ ReplicatePromote(entry, dst_nid) ==
 \* Apply CONFIRM on PROMOTE entry to destination node
 ReplicateConfirmPromote(entry, dst_nid, promote) ==
     LET dst_node == Nodes[dst_nid]
-        has_txn == ~ArrIsEmpty(dst_node.limbo_queue)
-        txn_entry == IF has_txn THEN ArrLast(dst_node.limbo_queue) ELSE NULL
+        has_txn == TxnIsValid(dst_node.limbo)
+        txn_entry == dst_node.limbo
         \* Commit/rollback transaction based on this PROMOTE's confirm_lsn
         owner_matches == has_txn /\ txn_entry.origin_id = promote.prev_owner
         should_commit == owner_matches /\ txn_entry.lsn <= promote.confirm_lsn
-        \* Always clear queue (commit if covered, rollback if not)
+        \* Always clear limbo (commit if covered, rollback if not)
         new_data == IF should_commit THEN ArrAppend(txn_entry.data, dst_node.data) ELSE dst_node.data
         \* Remove promotions with term <= confirmed promote's term, keep higher ones
         new_promotions == PromotionsRemoveUpToTerm(promote.raft_term, dst_node.limbo_promotions)
     IN
-    /\ Assert(ArrLen(dst_node.limbo_queue) <= 1,
-             "Too many transactions in queue during PROMOTE confirm")
     /\ Assert(has_txn => txn_entry.origin_id = dst_node.limbo_owner,
              "Transaction origin must match current limbo owner")
     /\ Assert(entry.confirm_lsn = promote.confirm_lsn,
@@ -539,7 +540,7 @@ ReplicateConfirmPromote(entry, dst_nid, promote) ==
                  SetLimboOwner(promote.origin_id,
                  SetLimboVclock(promote.confirmed_vclock,
                  SetLimboPromotions(new_promotions,
-                 SetLimboQueue(<<>>,
+                 SetLimbo(TxnEmpty,
                  SetData(new_data,
                  JournalAppend(entry, dst_node))))))))
 
@@ -547,9 +548,9 @@ ReplicateConfirmPromote(entry, dst_nid, promote) ==
 ReplicateConfirmTransaction(entry, dst_nid) ==
     LET dst_node == Nodes[dst_nid]
         new_vclock == VclockSet(dst_node.limbo_vclock, entry.owner_id, entry.confirm_lsn)
-        txn_entry == ArrLast(dst_node.limbo_queue)
+        txn_entry == dst_node.limbo
     IN
-    /\ Assert(~ArrIsEmpty(dst_node.limbo_queue),
+    /\ Assert(TxnIsValid(dst_node.limbo),
              "No transaction to confirm")
     /\ Assert(txn_entry.origin_id = entry.owner_id,
              "Transaction origin must match CONFIRM owner")
@@ -558,7 +559,7 @@ ReplicateConfirmTransaction(entry, dst_nid) ==
     /\ TxnMarkCommit(txn_entry.data)
     /\ Nodes' = NodesUpdate(dst_nid,
                  SetLimboVclock(new_vclock,
-                 SetLimboQueue(<<>>,
+                 SetLimbo(TxnEmpty,
                  SetData(ArrAppend(txn_entry.data, dst_node.data),
                  JournalAppend(entry, dst_node)))))
 
@@ -587,7 +588,7 @@ ReplicateTransaction(entry, dst_nid) ==
     THEN
         \* Valid transaction from owner
         /\ Nodes' = NodesUpdate(dst_nid,
-                     SetLimboQueue(ArrAppend(entry, dst_node.limbo_queue),
+                     SetLimbo(entry,
                      JournalAppend(entry, dst_node)))
         /\ UNCHANGED TransactionsDone
     ELSE IF is_old_term
@@ -674,19 +675,19 @@ LimboLeaderInvariant ==
         Nodes[nid].limbo_state = LimboStateLeader =>
         Nodes[nid].raft_state = RaftStateLeader
 
-\* If limbo queue is not empty, transaction origin must match limbo owner
-LimboQueueOwnerInvariant ==
+\* If limbo has a transaction, its origin must match limbo owner
+LimboOwnerInvariant ==
     \A nid \in NodeIDs:
         LET node == Nodes[nid]
-        IN ~ArrIsEmpty(node.limbo_queue) =>
-            ArrLast(node.limbo_queue).origin_id = node.limbo_owner
+        IN TxnIsValid(node.limbo) =>
+            node.limbo.origin_id = node.limbo_owner
 
 TotalInvariant ==
     /\ DataConsistencyInvariant
     /\ PromotionQueueInvariant
     /\ JournalLengthInvariant
     /\ LimboLeaderInvariant
-    /\ LimboQueueOwnerInvariant
+    /\ LimboOwnerInvariant
 
 Spec ==
     /\ Init
