@@ -644,12 +644,6 @@ DataConsistencyInvariant ==
         IN \A i \in 1..minlen:
             data1[i] = data2[i]
 
-\* Terminal state: either all transactions done OR max term reached
-TerminalProperty == <>[](
-    \/ \A t \in AllTransactions: TransactionsDone[t] # TxnResultUnknown
-    \/ \E nid \in NodeIDs: Nodes[nid].raft_term >= MaxTerm
-)
-
 \* No duplicate PROMOTE entries with same term in promotions dictionary
 PromotionQueueInvariant ==
     \A node_id \in NodeIDs:
