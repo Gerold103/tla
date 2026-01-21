@@ -23,6 +23,7 @@ EXTENDS TLC, Integers, Sequences, FiniteSets
 
 \* Node IDs in the cluster
 CONSTANT NodeIDs
+CONSTANT VoterIDs
 
 \* All transactions to execute (set of identifiers)
 CONSTANT AllTransactions
@@ -53,6 +54,9 @@ CONSTANT LimboStateLeader
 CONSTANT TxnResultCommit
 CONSTANT TxnResultRollback
 CONSTANT TxnResultUnknown
+
+CONSTANT NodeRoleCandidate
+CONSTANT NodeRoleVoter
 
 \* Symmetry - all nodes and transactions are equivalent
 Perms == Permutations(NodeIDs) \union Permutations(AllTransactions)
@@ -234,7 +238,8 @@ NodeCountFullReplicas(nid, max_term) ==
         /\ Nodes[other_nid].raft_term <= max_term})
 
 \* Create new node state
-NodeNew == [
+NodeNew(nid) == [
+    role |-> IF nid \in VoterIDs THEN NodeRoleVoter ELSE NodeRoleCandidate,
     journal |-> <<>>,
     raft_term |-> 1,
     raft_state |-> RaftStateFollower,
@@ -250,7 +255,7 @@ NodeNew == [
 
 \* Initialize state
 Init ==
-    /\ Nodes = [nid \in NodeIDs |-> NodeNew]
+    /\ Nodes = [nid \in NodeIDs |-> NodeNew(nid)]
     /\ TransactionsToDo = AllTransactions
     /\ TransactionsDone = [t \in AllTransactions |-> TxnResultUnknown]
     /\ LeaderTerm = 0
@@ -266,6 +271,7 @@ NodeBumpTerm(nid) ==
     LET node == Nodes[nid]
     IN
     /\ ~ShouldStop
+    /\ node.role = NodeRoleCandidate
     /\ node.raft_state = RaftStateFollower
     \* ---
     /\ Nodes' = NodesUpdate(nid,
@@ -280,6 +286,7 @@ NodeBecomeLeader(nid) ==
         term == node.raft_term
     IN
     /\ term > LeaderTerm
+    /\ node.role = NodeRoleCandidate
     /\ Assert(node.raft_state = RaftStateFollower, "Node can't be leader with term > leader's")
     /\ LET quorum_nodes == {other_nid \in NodeIDs:
                /\ JournalIsFullyReplicatedTo(Nodes[other_nid], node)
@@ -599,14 +606,14 @@ ReplicateTransaction(entry, dst_nid) ==
 
 \* Main replication action: replicate next entry from src to dst
 ReplicateNextEntry(src_nid, dst_nid) ==
+    LET src_node == Nodes[src_nid]
+        dst_node == Nodes[dst_nid]
+    IN
     /\ src_nid # dst_nid
-    /\ LET src_node == Nodes[src_nid]
-           dst_node == Nodes[dst_nid]
-           next_idx == NextEntryToReplicate(src_node, dst_node)
-       IN
+    /\ dst_node.role # NodeRoleVoter
+    /\ LET next_idx == NextEntryToReplicate(src_node, dst_node) IN
        /\ next_idx # 0
-       /\ LET entry == src_node.journal[next_idx]
-          IN
+       /\ LET entry == src_node.journal[next_idx] IN
           /\ CASE entry.type = EntryTypePromote -> ReplicatePromote(entry, dst_nid)
                [] entry.type = EntryTypeConfirm -> ReplicateConfirm(entry, dst_nid)
                [] entry.type = EntryTypeTransaction -> ReplicateTransaction(entry, dst_nid)
