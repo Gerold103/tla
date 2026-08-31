@@ -78,7 +78,10 @@ VARIABLE TransactionsToDo
 \* Completed transactions: map from transaction data -> result (commit/rollback)
 VARIABLE TransactionsDone
 
-\* Highest term that has elected a leader (0 initially)
+\* Highest term that has elected a leader (0 initially). This is the vote
+\* abstraction: instead of modeling per-node votes and vote requests, the
+\* Raft rule "at most one leader can be elected per term" is enforced
+\* through this single global variable.
 VARIABLE LeaderTerm
 
 \* Terms that have created a transaction: map from term -> 0 or 1
@@ -197,6 +200,10 @@ PromotionsRemoveUpToTerm(term, promotions) ==
         IF PromoteIsValid(promotions[nid]) /\ promotions[nid].raft_term <= term
         THEN PromoteEmpty
         ELSE promotions[nid]]
+\* Match a CONFIRM to a pending PROMOTE by its author and the confirmed LSN.
+\* The LSN comparison is unambiguous: chained promotions all inherit the
+\* confirm_lsn of the whole chain, and the dictionary keeps only the latest
+\* promotion of each author.
 PromotionsFindPending(nid, confirm_lsn, promotions) ==
     LET promote == promotions[nid]
     IN IF PromoteIsValid(promote) /\ promote.confirm_lsn = confirm_lsn
@@ -218,7 +225,10 @@ HasEntry(node, entry) ==
         EntriesEqual(node.journal[i], entry)
 
 \* Count how many nodes have a specific entry and have term <= given term
-\* This ensures we only count acknowledgments from nodes that haven't moved to a higher term
+\* This ensures we only count acknowledgments from nodes that haven't moved to a higher term.
+\* Such an acknowledgment would be hollow: the node's vote already belongs to a
+\* newer term's elections, so its copy of the entry no longer guarantees that
+\* the next elected leader will intersect with this entry's quorum.
 CountNodesWithEntry(entry, max_term) ==
     Cardinality({nid \in NodeIDs:
         /\ HasEntry(Nodes[nid], entry)
@@ -288,6 +298,12 @@ NodeBecomeLeader(nid) ==
     /\ term > LeaderTerm
     /\ node.role = NodeRoleCandidate
     /\ Assert(node.raft_state = RaftStateFollower, "Node can't be leader with term > leader's")
+    \* A node grants its vote only when its whole journal is already
+    \* contained in the candidate's one - the Raft "vote for up-to-date
+    \* candidates only" rule. It makes the new leader a superset of a
+    \* quorum, so it necessarily has every entry that ever gathered a
+    \* quorum of acks. Note that a voter's journal is always empty, so
+    \* voters vote for any candidate of a matching term.
     /\ LET quorum_nodes == {other_nid \in NodeIDs:
                /\ JournalIsFullyReplicatedTo(Nodes[other_nid], node)
                /\ Nodes[other_nid].raft_term = term}
@@ -362,6 +378,10 @@ LimboWritePromote(nid) ==
                node.raft_term,
                prev_owner,
                confirm_lsn,
+               \* The previous owner's component is folded into the vclock,
+               \* so that replicas adopting this vclock wholesale don't get
+               \* their knowledge of the previous owner's confirmed border
+               \* regressed below confirm_lsn.
                VclockSet(base_vclock, prev_owner, confirm_lsn)
            )
            old_promote == node.limbo_promotions[nid]
@@ -436,6 +456,8 @@ LimboCreateTransaction(nid) ==
     IN
     /\ node.limbo_state = LimboStateLeader
     /\ ~TxnIsValid(node.limbo)
+    \* At most one transaction per term - a state space reduction, not a
+    \* protocol rule.
     /\ TransactionTerms[node.limbo_term] = 0
     \* ---
     /\ \E txn_data \in TransactionsToDo:
@@ -482,7 +504,10 @@ LimboConfirmTransaction(nid) ==
 \*
 
 \* Find the next journal entry to replicate (first one not present on destination)
-\* Returns 0 if destination has all entries, otherwise returns the index
+\* Returns 0 if destination has all entries, otherwise returns the index.
+\* Picking the FIRST missing entry is load-bearing: it keeps the per-pair
+\* streaming in journal order, which guarantees, for example, that a txn is
+\* never delivered before the PROMOTE which made its author the owner.
 NextEntryToReplicate(src_node, dst_node) ==
     IF \E i \in DOMAIN(src_node.journal): ~HasEntry(dst_node, src_node.journal[i])
     THEN CHOOSE i \in DOMAIN(src_node.journal):
@@ -570,6 +595,10 @@ ReplicateConfirmTransaction(entry, dst_nid) ==
 \* Apply a CONFIRM entry to destination node
 ReplicateConfirm(entry, dst_nid) ==
     LET dst_node == Nodes[dst_nid]
+        \* Note the asymmetry: the vclock is checked by the confirmed owner,
+        \* but the pending promotion is looked up by the CONFIRM's author. A
+        \* CONFIRM on a PROMOTE is authored by the promoted node, while it
+        \* confirms the previous owner's LSNs.
         current_lsn == dst_node.limbo_vclock[entry.owner_id]
         promote == PromotionsFindPending(entry.origin_id, entry.confirm_lsn, dst_node.limbo_promotions)
     IN
@@ -610,6 +639,9 @@ ReplicateNextEntry(src_nid, dst_nid) ==
         dst_node == Nodes[dst_nid]
     IN
     /\ src_nid # dst_nid
+    \* Voters never receive journal entries - a state space reduction. They
+    \* only participate in elections (their empty journals make them vote
+    \* for anybody), and never count into entry ack or catch-up quorums.
     /\ dst_node.role # NodeRoleVoter
     /\ LET next_idx == NextEntryToReplicate(src_node, dst_node) IN
        /\ next_idx # 0
