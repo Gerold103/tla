@@ -239,14 +239,6 @@ JournalIsFullyReplicatedTo(from, to) ==
     \A i \in DOMAIN(from.journal):
         HasEntry(to, from.journal[i])
 
-\* Count nodes that have fully replicated this node's journal and have term <= given term
-\* This ensures we only count replicas that haven't moved to a higher term
-NodeCountFullReplicas(nid, max_term) ==
-    LET node == Nodes[nid]
-    IN Cardinality({other_nid \in NodeIDs:
-        /\ JournalIsFullyReplicatedTo(node, Nodes[other_nid])
-        /\ Nodes[other_nid].raft_term <= max_term})
-
 \* Create new node state
 NodeNew(nid) == [
     role |-> IF nid \in VoterIDs THEN NodeRoleVoter ELSE NodeRoleCandidate,
@@ -346,13 +338,18 @@ NodeObserveHigherTerm(dst_nid, src_nid) ==
 \* Limbo PROMOTE actions
 \*
 
-\* Raft leader writes PROMOTE after quorum catches up
+\* Raft leader writes PROMOTE right after winning the elections, without
+\* waiting for the pending txns to reach a quorum of replicas. The elections
+\* guarantee the leader already has every entry which could have gathered a
+\* quorum anywhere, and the quorum on the PROMOTE itself transitively
+\* certifies the leader's whole journal before anything gets confirmed -
+\* the PROMOTE is the last journal entry and the replication is strictly
+\* ordered.
 LimboWritePromote(nid) ==
     LET node == Nodes[nid]
     IN
     /\ node.raft_state = RaftStateLeader
     /\ node.raft_term > node.limbo_term
-    /\ NodeCountFullReplicas(nid, node.raft_term) >= Quorum
     /\ LET old_promote == node.limbo_promotions[nid]
        IN IF PromoteIsValid(old_promote) THEN old_promote.raft_term < node.raft_term ELSE TRUE
     \* ---
