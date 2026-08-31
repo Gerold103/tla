@@ -98,6 +98,7 @@ SetLimboState(v, s) == [s EXCEPT !.limbo_state = v]
 SetLimboTerm(v, s) == [s EXCEPT !.limbo_term = v]
 SetLimboOwner(v, s) == [s EXCEPT !.limbo_owner = v]
 SetLimboVclock(v, s) == [s EXCEPT !.limbo_vclock = v]
+SetLimboTermMap(v, s) == [s EXCEPT !.limbo_term_map = v]
 SetLimboPromotions(v, s) == [s EXCEPT !.limbo_promotions = v]
 SetLimbo(v, s) == [s EXCEPT !.limbo = v]
 SetData(v, s) == [s EXCEPT !.data = v]
@@ -141,24 +142,29 @@ ShouldStop ==
     \/ \E nid \in NodeIDs: Nodes[nid].raft_term >= MaxTerm
     \/ \A t \in AllTransactions: TransactionsDone[t] # TxnResultUnknown
 
-\* Create a new transaction entry
-EntryNewTransaction(origin_id, lsn, limbo_term, data) == [
+\* Create a new transaction entry. It carries no term - the receivers derive
+\* it from the origin's component in their limbo term map.
+EntryNewTransaction(origin_id, lsn, data) == [
     type |-> EntryTypeTransaction,
     origin_id |-> origin_id,
     lsn |-> lsn,
-    limbo_term |-> limbo_term,
     data |-> data
 ]
 
-\* Create a new PROMOTE entry
-EntryNewPromote(origin_id, lsn, raft_term, prev_owner, confirm_lsn, confirmed_vclock) == [
+\* Create a new PROMOTE entry. The term map carries the terms of all the
+\* promotions squashed into this one - one PROMOTE can represent a whole
+\* chain of them, with terms of different origins, or even multiple terms
+\* of the same origin (then only the biggest one is kept).
+EntryNewPromote(origin_id, lsn, raft_term, prev_owner, confirm_lsn,
+                confirmed_vclock, term_map) == [
     type |-> EntryTypePromote,
     origin_id |-> origin_id,
     lsn |-> lsn,
     raft_term |-> raft_term,
     prev_owner |-> prev_owner,
     confirm_lsn |-> confirm_lsn,
-    confirmed_vclock |-> confirmed_vclock
+    confirmed_vclock |-> confirmed_vclock,
+    term_map |-> term_map
 ]
 
 \* Create a new CONFIRM entry
@@ -239,6 +245,10 @@ NodeNew(nid) == [
     limbo_term |-> 1,
     limbo_owner |-> InitialLimboOwner,
     limbo_vclock |-> [i \in NodeIDs |-> -1],
+    \* Last known term of each node, taken from that node's last confirmed
+    \* PROMOTE. Used to find the term of the incoming transactions by their
+    \* origin, like the real code does.
+    limbo_term_map |-> [i \in NodeIDs |-> 0],
     limbo_promotions |-> PromotionsEmpty,
     limbo |-> TxnEmpty,
     data |-> <<>>,
@@ -353,13 +363,19 @@ LimboWritePromote(nid) ==
            base_vclock == IF has_pending
                           THEN latest_promote.confirmed_vclock
                           ELSE node.limbo_vclock
+           \* term_map: accumulate the chain's terms the same way as the
+           \* confirmed vclock, folding this promotion's own term in
+           base_term_map == IF has_pending
+                            THEN latest_promote.term_map
+                            ELSE node.limbo_term_map
            entry == EntryNewPromote(
                nid,
                node.next_lsn,
                node.raft_term,
                prev_owner,
                confirm_lsn,
-               VclockSet(base_vclock, prev_owner, confirm_lsn)
+               VclockSet(base_vclock, prev_owner, confirm_lsn),
+               VclockSet(base_term_map, nid, node.raft_term)
            )
            old_promote == node.limbo_promotions[nid]
            new_promotions == PromotionsSet(nid, entry, node.limbo_promotions)
@@ -405,6 +421,12 @@ LimboConfirmPromote(nid) ==
        /\ Assert(\A i \in NodeIDs:
                    promote_entry.confirmed_vclock[i] >= node.limbo_vclock[i],
                  "PROMOTE's confirmed_vclock must be >= limbo vclock")
+       /\ Assert(\A i \in NodeIDs:
+                   promote_entry.term_map[i] >= node.limbo_term_map[i],
+                 "PROMOTE's term map must be >= the local term map")
+       /\ Assert(\E i \in NodeIDs:
+                   promote_entry.term_map[i] > node.limbo_term_map[i],
+                 "PROMOTE's term map must advance at least one component")
        /\ IF has_txn
           THEN IF should_commit
                THEN TxnMarkCommit(txn_entry.data)
@@ -414,12 +436,13 @@ LimboConfirmPromote(nid) ==
                     SetLimboTerm(promote_entry.raft_term,
                     SetLimboOwner(nid,
                     SetLimboVclock(promote_entry.confirmed_vclock,
+                    SetLimboTermMap(promote_entry.term_map,
                     SetLimboPromotions(PromotionsEmpty,
                     SetLimbo(TxnEmpty,
                     SetData(new_data,
                     SetNextLSN(node.next_lsn + 1,
                     SetLimboState(LimboStateLeader,
-                    JournalAppend(confirm_entry, node))))))))))
+                    JournalAppend(confirm_entry, node)))))))))))
     /\ UNCHANGED<<TransactionsToDo, LeaderTerm, TransactionTerms>>
 
 --------------------------------------------------------------------------------
@@ -436,7 +459,7 @@ LimboCreateTransaction(nid) ==
     /\ TransactionTerms[node.limbo_term] = 0
     \* ---
     /\ \E txn_data \in TransactionsToDo:
-        LET entry == EntryNewTransaction(nid, node.next_lsn, node.limbo_term, txn_data)
+        LET entry == EntryNewTransaction(nid, node.next_lsn, txn_data)
         IN
         /\ TransactionsToDo' = TransactionsToDo \ {txn_data}
         /\ TransactionTerms' = [TransactionTerms EXCEPT ![node.limbo_term] = 1]
@@ -531,6 +554,12 @@ ReplicateConfirmPromote(entry, dst_nid, promote) ==
     /\ Assert(\A i \in NodeIDs:
                 promote.confirmed_vclock[i] >= dst_node.limbo_vclock[i],
               "PROMOTE's confirmed_vclock must be >= limbo vclock")
+    /\ Assert(\A i \in NodeIDs:
+                promote.term_map[i] >= dst_node.limbo_term_map[i],
+              "PROMOTE's term map must be >= the local term map")
+    /\ Assert(\E i \in NodeIDs:
+                promote.term_map[i] > dst_node.limbo_term_map[i],
+              "PROMOTE's term map must advance at least one component")
     /\ IF has_txn
        THEN IF should_commit
             THEN TxnMarkCommit(txn_entry.data)
@@ -540,10 +569,11 @@ ReplicateConfirmPromote(entry, dst_nid, promote) ==
                  SetLimboTerm(promote.raft_term,
                  SetLimboOwner(promote.origin_id,
                  SetLimboVclock(promote.confirmed_vclock,
+                 SetLimboTermMap(promote.term_map,
                  SetLimboPromotions(new_promotions,
                  SetLimbo(TxnEmpty,
                  SetData(new_data,
-                 JournalAppend(entry, dst_node))))))))
+                 JournalAppend(entry, dst_node)))))))))
 
 \* Apply CONFIRM on transaction entry to destination node
 ReplicateConfirmTransaction(entry, dst_nid) ==
@@ -583,7 +613,12 @@ ReplicateConfirm(entry, dst_nid) ==
 ReplicateTransaction(entry, dst_nid) ==
     LET dst_node == Nodes[dst_nid]
         is_from_owner == entry.origin_id = dst_node.limbo_owner
-        is_old_term == entry.limbo_term < dst_node.limbo_term
+        \* The entry carries no term. The origin's term is derived from the
+        \* local term map - the term of the origin's last confirmed PROMOTE.
+        \* The ordered replication makes this equal to attaching the creation
+        \* term to the txn: the txn is always received after the origin's
+        \* promote confirmation and before any newer rows of that origin.
+        is_old_term == dst_node.limbo_term_map[entry.origin_id] < dst_node.limbo_term
     IN
     IF is_from_owner
     THEN
