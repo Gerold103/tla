@@ -1,0 +1,84 @@
+# The ForwardRaft witness matrix. Each entry adds one invariant or property
+# from ForwardRaftWitness.tla - the negation of a scenario the model must be
+# able to reach. The run (tools/run.py --witness) succeeds when every config
+# ends with exactly that invariant or property violated: the violation trace
+# is the proof the state space covers the scenario, and a script for a test.
+# So the entry's name is the witness operator's name.
+#
+# Three data nodes with quorum 1 reach every scenario in the fewest steps:
+# every node elects itself, confirms alone, and every refusal is possible.
+# The cheap ones go first.
+
+configs:
+
+  - name: WitnessTwoLeadersOneTerm
+    note: two leaders elected in the same term, each with its own PROMOTE
+    invariant: WitnessTwoLeadersOneTerm
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 3
+    transactions: 2
+
+  - name: WitnessPromoteAheadOfTerm
+    note: a PROMOTE delivered before the receiver learned its term
+    invariant: WitnessPromoteAheadOfTerm
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 3
+    transactions: 2
+
+  - name: WitnessDataFork
+    note: a transaction committed on one node and rolled back on another
+    invariant: WitnessDataFork
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 3
+    transactions: 2
+
+  - name: WitnessPoisonedConfirmRefused
+    note: the CONFIRM of a poisoned pending PROMOTE arrives and is refused
+    property: WitnessPoisonedConfirmRefused
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 3
+    transactions: 2
+
+  - name: WitnessChainConfirmed
+    note: a chained PROMOTE confirmed, bringing a term never applied before
+    property: WitnessChainConfirmed
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 3
+    transactions: 2
+
+  - name: WitnessOlderPromoteConfirmedLater
+    note: an own PROMOTE confirmed with a newer live one pending beside it
+    property: WitnessOlderPromoteConfirmedLater
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 3
+    transactions: 2
+
+  - name: WitnessQuiescentSplit
+    note: replication finished with the cluster split, one pair still connected
+    invariant: WitnessQuiescentSplit
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 3
+    transactions: 2
+
+  - name: WitnessAllLinksBroken
+    note: every data node refuses every other one - three leaders, so three new terms
+    invariant: WitnessAllLinksBroken
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 3
+    transactions: 2

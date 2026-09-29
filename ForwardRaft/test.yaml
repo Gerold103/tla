@@ -1,0 +1,98 @@
+# The ForwardRaft test matrix. gen.py turns each entry into <name>.cfg from
+# template.cfg. The order is the run order - the smoke tests first. Every
+# config must pass.
+#
+# Depth: max_term 4 allows three promotions, which is what the deepest known
+# pattern needs - a chain through a chain, a poisoned entry covered by a
+# later promotion of its origin, three fork sides. max_term 3 is for smoke.
+#
+# Voters vote and observe terms but receive no rows, so a quorum above the
+# data node count can never confirm a PROMOTE. Such combinations are left
+# out.
+
+configs:
+
+# Smoke tests
+
+  - name: majority_d3v0_q2_t3
+    note: smoke test, majority
+    data_nodes: 3
+    voters: 0
+    quorum: 2
+    max_term: 3
+    transactions: 2
+
+  - name: bad_d3v0_q1_t3
+    note: smoke test, two-sided forks
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 3
+    transactions: 2
+
+# Proper tests
+
+  - name: majority_d3v0_q2_t4
+    note: the full majority run
+    data_nodes: 3
+    voters: 0
+    quorum: 2
+    max_term: 4
+    transactions: 2
+
+  - name: majority_d2v0_q2_t4
+    note: every ack required, no fork possible
+    data_nodes: 2
+    voters: 0
+    quorum: 2
+    max_term: 4
+    transactions: 2
+
+  - name: majority_d2v1_q2_t4
+    note: a voter decides elections, data nodes ack alone
+    data_nodes: 2
+    voters: 1
+    quorum: 2
+    max_term: 4
+    transactions: 2
+
+  - name: majority_d3v1_q3_t4
+    note: even node count
+    data_nodes: 3
+    voters: 1
+    quorum: 3
+    max_term: 4
+    transactions: 2
+
+  - name: majority_d3v2_q3_t4
+    note: the former large config
+    data_nodes: 3
+    voters: 2
+    quorum: 3
+    max_term: 4
+    transactions: 2
+
+  - name: bad_d2v0_q1_t4
+    note: every node elects itself
+    data_nodes: 2
+    voters: 0
+    quorum: 1
+    max_term: 4
+    transactions: 2
+
+  - name: bad_d3v0_q1_t4
+    note: three sides, all links can break
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 4
+    transactions: 2
+
+  - name: bad_d3v1_q2_t4
+    note: "exactly half: disjoint pairs, a voter in one"
+    data_nodes: 3
+    voters: 1
+    quorum: 2
+    max_term: 4
+    transactions: 2
+
