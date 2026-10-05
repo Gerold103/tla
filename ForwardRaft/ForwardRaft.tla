@@ -828,14 +828,27 @@ TxnDecisionsAreCoveredBy(a, b) ==
     /\ \A i \in DOMAIN(na.data): na.data[i] = nb.data[i]
     /\ na.data_rejected \subseteq nb.data_rejected
 
-\* Data consistency: a divergence can exist only while the row revealing it
-\* is in flight. Every decision is made by a journal row, and a refused row
-\* is never journaled. So once dst has every row src has, it made every
-\* decision src made, the same way. With a majority quorum that is every
-\* pair, always.
+\* Every leadership a has confirmed, b has confirmed too, or moved past: each
+\* origin's applied term, and the limbo term.
+LeadershipIsCoveredBy(a, b) ==
+    LET na == Nodes[a]
+        nb == Nodes[b]
+    IN
+    /\ na.limbo_term <= nb.limbo_term
+    /\ VclockGE(nb.limbo_term_map, na.limbo_term_map)
+
+\* Consistency over a live link: a divergence can exist only while the row
+\* revealing it is in flight. Every decision is made by a journal row, and a
+\* refused row is never journaled. So once dst has every row src has, it made
+\* every decision src made, the same way, and confirmed every leadership src
+\* confirmed. A conflict - a transaction decided differently, a term
+\* confirmed for two origins - is always on a row the receiver refuses. With
+\* a majority quorum nothing is refused, so this is every pair, always.
 CaughtUpConsistencyInvariant ==
     \A a \in DataNodes, b \in DataNodes:
-        a # b /\ IsCaughtUp(a, b) => TxnDecisionsAreCoveredBy(a, b)
+        a # b /\ IsCaughtUp(a, b) =>
+            /\ TxnDecisionsAreCoveredBy(a, b)
+            /\ LeadershipIsCoveredBy(a, b)
 
 \* Nothing is left to deliver over the open links.
 Quiescent ==
@@ -860,16 +873,24 @@ StatesEqual(a, b) ==
     /\ na.data = nb.data
     /\ na.data_rejected = nb.data_rejected
 
-\* When the replication is finished, the links are broken symmetrically -
-\* the detection works from both sides - and the nodes still connected form
-\* groups with identical journals and states, whatever the delivery order
-\* was inside the group. A majority quorum makes the whole cluster one group.
+\* When the replication is finished, the nodes still accepting each other's
+\* rows have identical journals and states, whatever the delivery order was
+\* between them. A majority quorum makes the whole cluster one such group.
+\*
+\* The detection is not always two-sided. Two leaders of one term (a quorum
+\* at or below half) refuse each other's PROMOTE only while their own one for
+\* that term is pending. A leader re-elected before its PROMOTE got confirmed
+\* chains the new one over it and forgets the old term, so it stores the
+\* other leader's PROMOTE as live, and learns of the fork only from that
+\* leader's CONFIRM, which poisons its own pending by regression - or never,
+\* if that CONFIRM doesn't come, and then it just follows. It confirmed
+\* nothing of its own in between, so a one-way link is covered by
+\* CaughtUpConsistencyInvariant: the receiver has everything the sender has.
 QuiescentInvariant ==
     Quiescent =>
         \A a \in DataNodes, b \in DataNodes:
-            a # b =>
-                /\ LinkIsOpenFromTo(a, b) <=> LinkIsOpenFromTo(b, a)
-                /\ LinkIsOpenFromTo(a, b) => JournalsEqual(a, b) /\ StatesEqual(a, b)
+            a # b /\ LinkIsOpenFromTo(a, b) /\ LinkIsOpenFromTo(b, a) =>
+                JournalsEqual(a, b) /\ StatesEqual(a, b)
 
 \* Journal length must not exceed expected maximum
 JournalLengthInvariant ==
@@ -889,12 +910,23 @@ LimboOwnerInvariant ==
         IN TxnIsValid(node.limbo) =>
             node.limbo.origin_id = node.limbo_owner
 
+\* A term hosts at most one confirmed PROMOTE: no node holds one applied term
+\* for two origins. The filters keep it so - a PROMOTE of a term taken in the
+\* map is refused, and a pending PROMOTE at or below the applied limbo term is
+\* poisoned, its CONFIRM refused.
+LimboTermMapInvariant ==
+    \A nid \in NodeIDs:
+        LET map == Nodes[nid].limbo_term_map
+        IN \A a \in NodeIDs, b \in NodeIDs:
+            a # b /\ map[a] > 0 => map[a] # map[b]
+
 TotalInvariant ==
     /\ CaughtUpConsistencyInvariant
     /\ QuiescentInvariant
     /\ JournalLengthInvariant
     /\ LimboLeaderInvariant
     /\ LimboOwnerInvariant
+    /\ LimboTermMapInvariant
 
 Spec ==
     /\ Init

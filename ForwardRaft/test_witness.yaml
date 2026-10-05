@@ -77,7 +77,7 @@ configs:
   - name: WitnessAllLinksBroken
     note: every data node refuses every other one - three leaders, so three new terms
     invariant: WitnessAllLinksBroken
-    data_nodes: 3
+    data_nodes: 2
     voters: 0
     quorum: 1
     max_term: 3

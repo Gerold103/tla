@@ -62,23 +62,34 @@ Such combinations are left out.
 | majority_d3v0_q2_t4   | 3     | 2 of 3 | the full majority run                           |
 | majority_d2v0_q2_t4   | 2     | 2 of 2 | every ack required, no fork possible            |
 | majority_d2v1_q2_t4   | 2+1   | 2 of 3 | a voter decides elections, data nodes ack alone |
-| majority_d3v1_q3_t4   | 3+1   | 3 of 4 | even node count                                 |
-| majority_d3v2_q3_t4   | 3+2   | 3 of 5 | the former large config                         |
+| majority_d3v2_q3_t4   | 3+2   | 3 of 5 | two voters, every data node must ack            |
 | bad_d2v0_q1_t4        | 2     | 1 of 2 | every node elects itself                        |
 | bad_d3v0_q1_t4        | 3     | 1 of 3 | three sides, all links can break                |
-| bad_d3v1_q2_t4        | 3+1   | 2 of 4 | exactly half: disjoint pairs, a voter in one    |
 
-Voters add nothing to a `bad_*` config beyond `bad_d3v0_q1_t4`. `Quorum`
-appears in the spec only as a lower bound - on the votes to become leader,
-on the acks to confirm a PROMOTE or a transaction - so a smaller quorum only
-enables more. Acks come from data nodes alone, and a voter's remaining
-contribution, its vote and the terms it relays, is subsumed at quorum 1 by
-self-election and term bumps. `bad_d3v1_q2_t4` is kept as the "exactly
-half" shape operators do configure; `bad_d3v2_q2_t4` was dropped after
-three days of running without finishing - two voters multiply the states
-(terms and votes of each) and add no scenario. Voters matter in the
-`majority_*` configs, where they shift what a majority means relative to the
-data nodes.
+Redundancy: a config with one node never acting is a subset of the same
+config with that node present, and `Quiescent`, `StatesEqual` range over the
+data nodes only, so an idle voter changes nothing in the invariants either.
+Hence:
+
+- `majority_d3v1_q3_t4` is `majority_d3v2_q3_t4` with one voter idle (same
+  elections, same acks, same `IsMajorityQuorum`) - dropped.
+- Voters add nothing to a `bad_*` config beyond `bad_d3v0_q1_t4`. `Quorum`
+  appears in the spec only as a lower bound - on the votes to become leader,
+  on the acks to confirm a PROMOTE or a transaction - so a smaller quorum
+  only enables more. Acks come from data nodes alone, and a voter's remaining
+  contribution, its vote and the terms it relays, is subsumed at quorum 1 by
+  self-election and term bumps. `bad_d3v1_q2_t4` ("exactly half") and
+  `bad_d3v2_q2_t4` ("below half") were dropped; the latter had run three
+  days without finishing, two voters multiplying the states by their terms
+  and votes.
+- The two-node configs are subsets of the three-node ones with `n3` idle,
+  except that their `Quiescent` premise holds where an idle `n3` never
+  catches up. They run in minutes and stay.
+- The `t3` smokes are depth-limited prefixes of their `t4` runs, kept to
+  fail fast.
+
+Voters matter in the `majority_*` configs, where they shift what a majority
+means relative to the data nodes.
 
 ## The witness matrix
 

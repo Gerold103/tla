@@ -56,16 +56,8 @@ configs:
     max_term: 4
     transactions: 2
 
-  - name: majority_d3v1_q3_t4
-    note: even node count
-    data_nodes: 3
-    voters: 1
-    quorum: 3
-    max_term: 4
-    transactions: 2
-
   - name: majority_d3v2_q3_t4
-    note: the former large config
+    note: two voters, every data node must ack; covers d3v1_q3 with one voter idle
     data_nodes: 3
     voters: 2
     quorum: 3
@@ -81,18 +73,9 @@ configs:
     transactions: 2
 
   - name: bad_d3v0_q1_t4
-    note: three sides, all links can break
+    note: three sides, all links can break; covers every bad config with voters
     data_nodes: 3
     voters: 0
     quorum: 1
     max_term: 4
     transactions: 2
-
-  - name: bad_d3v1_q2_t4
-    note: "exactly half: disjoint pairs, a voter in one"
-    data_nodes: 3
-    voters: 1
-    quorum: 2
-    max_term: 4
-    transactions: 2
-
