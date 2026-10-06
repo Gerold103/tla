@@ -53,9 +53,11 @@ CONSTANT EntryTypePromote
 CONSTANT EntryTypeConfirm
 
 \* Raft states. A candidate is a node collecting the votes of the term it
-\* started; only a candidate counts them. A follower voted for itself when it
-\* was a leader of this term and resigned - it is never elected again in the
-\* term, it can only observe a higher one or start a new election.
+\* started; only a candidate counts them. A leader leaving its leadership on
+\* its own - fenced, demoted, restarted - is in Tarantool a follower of the
+\* same term with its vote still cast, never elected again in that term: it
+\* can only observe a higher term or start a new election. Both are available
+\* to the leader here directly, so that follower is not a state of its own.
 CONSTANT RaftStateFollower
 CONSTANT RaftStateCandidate
 CONSTANT RaftStateLeader
@@ -312,13 +314,13 @@ Init ==
 
 \* Node randomly bumps its term to start an election, voting for itself and
 \* becoming a candidate. A candidate does it too - its round timed out
-\* without a quorum.
+\* without a quorum. So does a leader - this is how it leaves its leadership
+\* on its own, see the Raft states.
 NodeBumpTerm(nid) ==
     LET node == Nodes[nid]
     IN
     /\ node.raft_term < MaxTerm
     /\ node.role = NodeRoleCandidate
-    /\ node.raft_state # RaftStateLeader
     \* ---
     /\ Nodes' = NodesUpdate(nid,
                 SetRaftTerm(node.raft_term + 1,
@@ -369,21 +371,6 @@ NodeBecomeLeader(nid) ==
     /\ Nodes' = NodesUpdate(nid,
                 SetRaftState(RaftStateLeader,
                 SetMadeTxn(FALSE,
-                node)))
-    /\ UNCHANGED TransactionsToDo
-
-\* Leader resigns - fenced, demoted, restarted. It is a follower of the same
-\* term with its own vote still cast, not a candidate: nobody votes for it
-\* and it counts no votes, so it is never elected again in this term. It can
-\* observe a higher term or start a new election.
-NodeStepDown(nid) ==
-    LET node == Nodes[nid]
-    IN
-    /\ node.raft_state = RaftStateLeader \/ node.limbo_state = LimboStateLeader
-    \* ---
-    /\ Nodes' = NodesUpdate(nid,
-                SetRaftState(RaftStateFollower,
-                SetLimboState(LimboStateReplica,
                 node)))
     /\ UNCHANGED TransactionsToDo
 
@@ -816,7 +803,6 @@ Next ==
     \/ \E nid \in NodeIDs: NodeBumpTerm(nid)
     \/ \E nid \in NodeIDs, cand \in NodeIDs: NodeVote(nid, cand)
     \/ \E nid \in NodeIDs: NodeBecomeLeader(nid)
-    \/ \E nid \in NodeIDs: NodeStepDown(nid)
     \/ \E src \in NodeIDs, dst \in NodeIDs: NodeObserveHigherTerm(dst, src)
     \/ \E nid \in NodeIDs: LimboWritePromote(nid)
     \/ \E nid \in NodeIDs: LimboConfirmPromote(nid)
