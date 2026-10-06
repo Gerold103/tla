@@ -52,8 +52,12 @@ CONSTANT EntryTypeTransaction
 CONSTANT EntryTypePromote
 CONSTANT EntryTypeConfirm
 
-\* Raft states
+\* Raft states. A candidate is a node collecting the votes of the term it
+\* started; only a candidate counts them. A follower voted for itself when it
+\* was a leader of this term and resigned - it is never elected again in the
+\* term, it can only observe a higher one or start a new election.
 CONSTANT RaftStateFollower
+CONSTANT RaftStateCandidate
 CONSTANT RaftStateLeader
 
 \* Limbo states
@@ -306,19 +310,22 @@ Init ==
 \* Raft election actions
 \*
 
-\* Node randomly bumps its term to start an election, voting for itself.
+\* Node randomly bumps its term to start an election, voting for itself and
+\* becoming a candidate. A candidate does it too - its round timed out
+\* without a quorum.
 NodeBumpTerm(nid) ==
     LET node == Nodes[nid]
     IN
     /\ node.raft_term < MaxTerm
     /\ node.role = NodeRoleCandidate
-    /\ node.raft_state = RaftStateFollower
+    /\ node.raft_state # RaftStateLeader
     \* ---
     /\ Nodes' = NodesUpdate(nid,
                 SetRaftTerm(node.raft_term + 1,
                 SetRaftVote(nid,
+                SetRaftState(RaftStateCandidate,
                 SetLimboState(LimboStateReplica,
-                node))))
+                node)))))
     /\ UNCHANGED TransactionsToDo
 
 \* Node votes for a candidate of its term, once per term. The candidate's
@@ -337,8 +344,8 @@ NodeVote(voter_nid, cand_nid) ==
     /\ voter_nid # cand_nid
     /\ voter.raft_term = cand.raft_term
     /\ voter.raft_vote = NULL
-    /\ cand.raft_vote = cand_nid
-    /\ cand.raft_state = RaftStateFollower
+    /\ cand.raft_state = RaftStateCandidate
+    /\ Assert(cand.raft_vote = cand_nid, "A candidate has voted for itself")
     /\ JournalIsFullyReplicatedTo(voter, cand)
     /\ LinkIsOpenFromTo(cand_nid, voter_nid)
     \* ---
@@ -351,9 +358,9 @@ NodeBecomeLeader(nid) ==
     LET node == Nodes[nid]
         term == node.raft_term
     IN
-    /\ node.role = NodeRoleCandidate
-    /\ node.raft_state = RaftStateFollower
-    /\ node.raft_vote = nid
+    /\ node.raft_state = RaftStateCandidate
+    /\ Assert(node.role = NodeRoleCandidate, "A voter is never a candidate")
+    /\ Assert(node.raft_vote = nid, "A candidate has voted for itself")
     /\ Cardinality({other \in NodeIDs:
             /\ Nodes[other].raft_term = term
             /\ Nodes[other].raft_vote = nid
@@ -365,7 +372,10 @@ NodeBecomeLeader(nid) ==
                 node)))
     /\ UNCHANGED TransactionsToDo
 
-\* Node randomly steps down from leader (simulating crash/restart)
+\* Leader resigns - fenced, demoted, restarted. It is a follower of the same
+\* term with its own vote still cast, not a candidate: nobody votes for it
+\* and it counts no votes, so it is never elected again in this term. It can
+\* observe a higher term or start a new election.
 NodeStepDown(nid) ==
     LET node == Nodes[nid]
     IN
