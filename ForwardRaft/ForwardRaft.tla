@@ -324,10 +324,16 @@ NodeBumpTerm(nid) ==
 \* Node votes for a candidate of its term, once per term. The candidate's
 \* journal must contain everything the voter has. The vote request is a
 \* Raft message coming over the candidate's replication link.
+\*
+\* With quorum 1 the self-vote is the quorum: the other votes are never
+\* counted, and the only thing a vote does to the voter is forbid its own
+\* election in that term - which it may equally just not attempt. So the
+\* votes are not even cast then, a state space reduction.
 NodeVote(voter_nid, cand_nid) ==
     LET voter == Nodes[voter_nid]
         cand == Nodes[cand_nid]
     IN
+    /\ Quorum > 1
     /\ voter_nid # cand_nid
     /\ voter.raft_term = cand.raft_term
     /\ voter.raft_vote = NULL
