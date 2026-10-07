@@ -125,11 +125,19 @@ WitnessConfirmOnDelayedAck ==
           \/ LimboConfirmPromote(nid) /\ FreshAcksBelowQuorum(node.limbo_promotions[nid])
           \/ LimboConfirmTransaction(nid) /\ FreshAcksBelowQuorum(node.limbo)]_vars
 
-\* The replication is finished with the cluster split in two groups, each
-\* consistent inside.
+\* The replication is finished with the cluster split in two groups: every
+\* pair across the cut refused each other both ways, every pair inside a
+\* group still exchanges rows both ways - and is consistent, by
+\* JournalDeterminesStateInvariant. A one-way refusal is not a split: the
+\* refused side still follows the other.
 WitnessQuiescentSplit ==
     ~(/\ Quiescent
-      /\ \E a \in DataNodes, b \in DataNodes: a # b /\ a \notin Nodes[b].appliers
-      /\ \E a \in DataNodes, b \in DataNodes: a # b /\ a \in Nodes[b].appliers)
+      /\ \E G \in SUBSET DataNodes:
+          /\ G # {} /\ G # DataNodes
+          /\ \A a \in G, b \in DataNodes \ G:
+              a \notin Nodes[b].appliers /\ b \notin Nodes[a].appliers
+          /\ \A a \in DataNodes, b \in DataNodes:
+              a # b /\ (a \in G <=> b \in G) =>
+                  a \in Nodes[b].appliers /\ b \in Nodes[a].appliers)
 
 ================================================================================

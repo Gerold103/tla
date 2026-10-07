@@ -96,10 +96,10 @@ configs:
     transactions: 2
 
   - name: WitnessAllLinksBroken
-    note: every data node refuses every other one - three leaders, so three new terms
+    note: every data node refuses every other one - three leaders of one term refuse each other's PROMOTE on arrival
     invariant: WitnessAllLinksBroken
-    data_nodes: 2
+    data_nodes: 3
     voters: 0
     quorum: 1
-    max_term: 3
+    max_term: 2
     transactions: 2

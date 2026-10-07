@@ -108,17 +108,23 @@ a chained PROMOTE whose confirmed map a sequence of plain promotions can
 produce as well - is a `property:` entry of the form `[][~step]_vars`,
 which TLC checks on every transition of the same search.
 
-All witnesses run on three data nodes with quorum 1: every node elects
+The witnesses run on three data nodes with quorum 1: every node elects
 itself and confirms alone, every refusal is possible, and every scenario
-takes the fewest steps. `MaxTerm = 3` suffices for all but one.
+takes the fewest steps. `MaxTerm = 3` suffices; `AllLinksBroken` needs only
+2, three leaders of one term refusing each other's PROMOTE on arrival. Two
+witnesses run on a majority quorum instead, to show their scenario is not a
+fork artifact: the delayed ack (the own ack is never stale, so it needs a
+quorum of two) and the leader with a newer pending PROMOTE.
 
-| witness                           | kind      | the scenario reached                                              |
-|-----------------------------------|-----------|-------------------------------------------------------------------|
-| WitnessTwoLeadersOneTerm          | invariant | two leaders of one term, each with its own PROMOTE                |
-| WitnessPromoteAheadOfTerm         | invariant | a PROMOTE pending on a node whose Raft term is still below it     |
-| WitnessDataFork                   | invariant | a transaction committed on one node, rolled back on another       |
-| WitnessPoisonedConfirmRefused     | property  | the CONFIRM of a poisoned pending PROMOTE arrives and is refused  |
-| WitnessChainConfirmed             | property  | a CONFIRM advances the applied term map in two components at once |
-| WitnessOlderPromoteConfirmedLater | property  | an own PROMOTE confirmed with a newer live one pending beside it  |
-| WitnessQuiescentSplit             | invariant | replication finished, cluster split, one pair still connected     |
-| WitnessAllLinksBroken             | invariant | every data node refuses every other one; `MaxTerm = 4`            |
+| witness                           | kind      | quorum | the scenario reached                                              |
+|-----------------------------------|-----------|--------|-------------------------------------------------------------------|
+| WitnessTwoLeadersOneTerm          | invariant | 1 of 3 | two leaders of one term, each with its own PROMOTE                |
+| WitnessPromoteAheadOfTerm         | invariant | 1 of 3 | a PROMOTE pending on a node whose Raft term is still below it     |
+| WitnessDataFork                   | invariant | 1 of 3 | a transaction committed on one node, rolled back on another       |
+| WitnessPoisonedConfirmRefused     | property  | 1 of 3 | the CONFIRM of a poisoned pending PROMOTE arrives and is refused  |
+| WitnessChainConfirmed             | property  | 1 of 3 | a CONFIRM advances the applied term map in two components at once |
+| WitnessOlderPromoteConfirmedLater | property  | 1 of 3 | an own PROMOTE confirmed with a newer live one pending beside it  |
+| WitnessConfirmOnDelayedAck        | property  | 2 of 3 | a CONFIRM whose quorum holds only with an ack from a node that moved to a higher term since |
+| WitnessLeaderWithNewerPending     | invariant | 2 of 3 | a limbo leader with a newer PROMOTE pending beside it             |
+| WitnessQuiescentSplit             | invariant | 1 of 3 | replication finished, the cluster in two groups: refused both ways across, open both ways inside |
+| WitnessAllLinksBroken             | invariant | 1 of 3 | every data node refuses every other one; `MaxTerm = 2`            |
