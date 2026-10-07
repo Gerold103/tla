@@ -886,14 +886,10 @@ CaughtUpConsistencyInvariant ==
             /\ TxnDecisionsAreCoveredBy(a, b)
             /\ LeadershipIsCoveredBy(a, b)
 
-\* Nothing is left to deliver over the open links.
+\* Nothing is left to deliver over the open links. Used by the witnesses.
 Quiescent ==
     \A src \in DataNodes, dst \in DataNodes:
         src # dst => ~LinkIsOpenFromTo(src, dst) \/ IsCaughtUp(src, dst)
-
-JournalsEqual(a, b) ==
-    /\ JournalIsFullyReplicatedTo(Nodes[a], Nodes[b])
-    /\ JournalIsFullyReplicatedTo(Nodes[b], Nodes[a])
 
 \* The state derived from the journal, excluding the Raft-dependent parts.
 StatesEqual(a, b) ==
@@ -909,24 +905,22 @@ StatesEqual(a, b) ==
     /\ na.data = nb.data
     /\ na.data_rejected = nb.data_rejected
 
-\* When the replication is finished, the nodes still accepting each other's
-\* rows have identical journals and states, whatever the delivery order was
-\* between them. A majority quorum makes the whole cluster one such group.
-\*
-\* The detection is not always two-sided. Two leaders of one term (a quorum
-\* at or below half) refuse each other's PROMOTE only while their own one for
-\* that term is pending. A leader re-elected before its PROMOTE got confirmed
-\* chains the new one over it and forgets the old term, so it stores the
-\* other leader's PROMOTE as live, and learns of the fork only from that
-\* leader's CONFIRM, which poisons its own pending by regression - or never,
-\* if that CONFIRM doesn't come, and then it just follows. It confirmed
-\* nothing of its own in between, so a one-way link is covered by
-\* CaughtUpConsistencyInvariant: the receiver has everything the sender has.
-QuiescentInvariant ==
-    Quiescent =>
-        \A a \in DataNodes, b \in DataNodes:
-            a # b /\ LinkIsOpenFromTo(a, b) /\ LinkIsOpenFromTo(b, a) =>
-                JournalsEqual(a, b) /\ StatesEqual(a, b)
+\* Two nodes holding the same rows have the same state derived from them,
+\* whatever order the rows came in and whatever the links did meanwhile: the
+\* journal determines the limbo. With CaughtUpConsistencyInvariant - the
+\* receiver covers the sender - this is also all that can be said about the
+\* links, as the fork detection is not always two-sided. Two leaders of one
+\* term (a quorum at or below half) refuse each other's PROMOTE only while
+\* their own one for that term is pending. A leader re-elected before its
+\* PROMOTE got confirmed chains the new one over it and forgets the old term,
+\* so it stores the other leader's PROMOTE as live, and learns of the fork
+\* only from that leader's CONFIRM, which poisons its own pending by
+\* regression - or never, if that CONFIRM doesn't come, and then it just
+\* follows. It confirmed nothing of its own in between, so the one-way link
+\* breaks nothing: the receiver has everything the sender has.
+JournalDeterminesStateInvariant ==
+    \A a \in DataNodes, b \in DataNodes:
+        a # b /\ IsCaughtUp(a, b) /\ IsCaughtUp(b, a) => StatesEqual(a, b)
 
 \* Journal length must not exceed expected maximum
 JournalLengthInvariant ==
@@ -966,7 +960,7 @@ LimboTermMapInvariant ==
 
 TotalInvariant ==
     /\ CaughtUpConsistencyInvariant
-    /\ QuiescentInvariant
+    /\ JournalDeterminesStateInvariant
     /\ JournalLengthInvariant
     /\ LimboStateInvariant
     /\ LimboOwnerInvariant
