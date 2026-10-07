@@ -271,6 +271,10 @@ PromotionsRemoveCovered(term_map, promotions) ==
 HasEntry(node, entry) ==
     entry.lsn <= node.journal_vclock[entry.origin_id]
 
+\* Replication link operations. The link src -> dst is the applier of dst
+\* receiving from src.
+LinkIsOpenFromTo(src, dst) == src \in Nodes[dst].appliers
+
 \* The acks for an entry which its origin can count: the nodes having the
 \* entry, whose ack carried a term not above the origin's. An ack with a
 \* higher term never counts - the relay processes the term first and the
@@ -279,7 +283,10 @@ HasEntry(node, entry) ==
 \* JournalAppend: the ack can be in flight while the node moves to a higher
 \* term, and the origin still counts it on arrival. The entry is the origin's
 \* latest row - it writes nothing else while waiting - and the origin's own
-\* write is always among the acks.
+\* write is always among the acks. The ack travels over the node's applier
+\* from the origin: once the node refused something from the origin and
+\* closed it, the origin hears nothing from the node anymore, whatever the
+\* node receives through others.
 CountAcksForEntry(entry) ==
     LET origin == entry.origin_id
     IN
@@ -287,16 +294,13 @@ CountAcksForEntry(entry) ==
               "The origin's own write of the entry is an ack")
     THEN Cardinality({nid \in NodeIDs:
              /\ HasEntry(Nodes[nid], entry)
-             /\ origin \in Nodes[nid].valid_acks})
+             /\ origin \in Nodes[nid].valid_acks
+             /\ nid = origin \/ LinkIsOpenFromTo(origin, nid)})
     ELSE 0
 
 \* Check if all journal entries from 'from' node are present in 'to' node
 JournalIsFullyReplicatedTo(from, to) ==
     VclockGE(to.journal_vclock, from.journal_vclock)
-
-\* Replication link operations. The link src -> dst is the applier of dst
-\* receiving from src.
-LinkIsOpenFromTo(src, dst) == src \in Nodes[dst].appliers
 
 \* Create new node state
 NodeNew(nid) == [
