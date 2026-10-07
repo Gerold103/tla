@@ -704,15 +704,12 @@ NextEntryToReplicate(src_node, dst_node) ==
 \* Apply a PROMOTE entry to destination node. It is stored as pending even
 \* when poisoned already - an old PROMOTE, superseded before getting
 \* confirmed, can show up late through another link, and its CONFIRM must
-\* be recognized.
+\* be recognized. A pending PROMOTE, however new, changes nothing about the
+\* leadership: the limbo leader is demoted by the Raft term it observes or
+\* by the CONFIRM it applies, see LimboStateInvariant.
 ReplicatePromote(entry, src_nid, dst_nid) ==
     LET dst_node == Nodes[dst_nid]
         origin == entry.origin_id
-        \* A newer promotion demotes the limbo leader. An older one, poisoned
-        \* on arrival, changes nothing about the leadership.
-        new_limbo_state == IF entry.raft_term > dst_node.limbo_term
-                           THEN LimboStateReplica
-                           ELSE dst_node.limbo_state
     IN
     IF ~PromoteCanBeWritten(dst_node, entry.raft_term, origin)
     THEN LinkCloseFromTo(src_nid, dst_nid)
@@ -721,9 +718,7 @@ ReplicatePromote(entry, src_nid, dst_nid) ==
         \* so it is never covered on arrival.
         /\ Assert(entry.raft_term > dst_node.limbo_term_map[origin],
                   "PROMOTE can't be covered on arrival")
-        /\ Nodes' = NodesUpdate(dst_nid,
-                     SetLimboState(new_limbo_state,
-                     LimboStorePromote(entry, dst_node)))
+        /\ Nodes' = NodesUpdate(dst_nid, LimboStorePromote(entry, dst_node))
 
 \* Apply CONFIRM on PROMOTE entry to destination node. The CONFIRM of a
 \* PROMOTE not passing the filter is a fork - its author confirmed it without
@@ -934,11 +929,19 @@ JournalLengthInvariant ==
     \A nid \in NodeIDs:
         Len(Nodes[nid].journal) <= MaxJournalLength
 
-\* Limbo leader can only exist if Raft leader
-LimboLeaderInvariant ==
+\* The limbo state is a stored field, as in the code where it is kept for a
+\* fast check, so it must always equal what the code derives it from
+\* (txn_limbo_update_state): the node is the limbo leader exactly when it
+\* owns the limbo, is the Raft leader, and the limbo's term is the Raft
+\* term. Both directions - the field is updated in the right places, and
+\* nowhere else.
+LimboStateInvariant ==
     \A nid \in NodeIDs:
-        Nodes[nid].limbo_state = LimboStateLeader =>
-        Nodes[nid].raft_state = RaftStateLeader
+        LET node == Nodes[nid]
+        IN node.limbo_state = LimboStateLeader <=>
+            /\ node.raft_state = RaftStateLeader
+            /\ node.limbo_owner = nid
+            /\ node.limbo_term = node.raft_term
 
 \* If limbo has a transaction, its origin must match limbo owner
 LimboOwnerInvariant ==
@@ -961,7 +964,7 @@ TotalInvariant ==
     /\ CaughtUpConsistencyInvariant
     /\ QuiescentInvariant
     /\ JournalLengthInvariant
-    /\ LimboLeaderInvariant
+    /\ LimboStateInvariant
     /\ LimboOwnerInvariant
     /\ LimboTermMapInvariant
 

@@ -95,6 +95,20 @@ WitnessOlderPromoteConfirmedLater ==
               /\ node.limbo_promotions[o].raft_term > node.limbo_term
               /\ ~PromoteIsPoisoned(node, node.limbo_promotions[o])]_vars
 
+\* A limbo leader with a newer PROMOTE pending beside it. The pending demotes
+\* nothing - the leader keeps writing until it observes the Raft term or
+\* applies the CONFIRM, as the code derives the limbo state. The newer PROMOTE
+\* reached the leader ahead of its term.
+WitnessLeaderWithNewerPending ==
+    ~\E nid \in DataNodes, origin \in NodeIDs:
+        LET node == Nodes[nid]
+            promote == node.limbo_promotions[origin]
+        IN
+        /\ nid # origin
+        /\ node.limbo_state = LimboStateLeader
+        /\ PromoteIsValid(promote)
+        /\ promote.raft_term > node.limbo_term
+
 \* A CONFIRM written on a delayed ack: among the counted acks is one from a
 \* node which has moved to a higher term since it appended the row, and
 \* without such acks the quorum is not there. The ack carried the term of the

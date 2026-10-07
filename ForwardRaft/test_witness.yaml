@@ -7,8 +7,10 @@
 #
 # Three data nodes with quorum 1 reach every scenario in the fewest steps:
 # every node elects itself, confirms alone, and every refusal is possible.
-# The exception is the delayed ack: the own ack is never stale, so it needs a
-# quorum of two. The cheap ones go first.
+# Two run on a majority quorum instead, to show the scenario is not a
+# fork artifact: the delayed ack (the own ack is never stale, so it needs a
+# quorum of two) and the leader with a newer pending PROMOTE. The cheap ones
+# go first.
 
 configs:
 
@@ -69,6 +71,15 @@ configs:
   - name: WitnessConfirmOnDelayedAck
     note: a CONFIRM whose quorum holds only with an ack from a node that moved to a higher term since
     property: WitnessConfirmOnDelayedAck
+    data_nodes: 3
+    voters: 0
+    quorum: 2
+    max_term: 3
+    transactions: 1
+
+  - name: WitnessLeaderWithNewerPending
+    note: a limbo leader with a newer PROMOTE pending beside it, in a majority cluster
+    invariant: WitnessLeaderWithNewerPending
     data_nodes: 3
     voters: 0
     quorum: 2
