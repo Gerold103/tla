@@ -95,6 +95,22 @@ WitnessOlderPromoteConfirmedLater ==
               /\ node.limbo_promotions[o].raft_term > node.limbo_term
               /\ ~PromoteIsPoisoned(node, node.limbo_promotions[o])]_vars
 
+\* A CONFIRM written on a delayed ack: among the counted acks is one from a
+\* node which has moved to a higher term since it appended the row, and
+\* without such acks the quorum is not there. The ack carried the term of the
+\* append, so the origin counts it. Needs a quorum above one - the own ack
+\* is never stale - so this one runs on a majority config.
+WitnessConfirmOnDelayedAck ==
+    [][~\E nid \in DataNodes:
+          LET node == Nodes[nid]
+              FreshAcksBelowQuorum(entry) ==
+                  Cardinality({o \in NodeIDs:
+                      /\ HasEntry(Nodes[o], entry)
+                      /\ Nodes[o].raft_term <= node.raft_term}) < Quorum
+          IN
+          \/ LimboConfirmPromote(nid) /\ FreshAcksBelowQuorum(node.limbo_promotions[nid])
+          \/ LimboConfirmTransaction(nid) /\ FreshAcksBelowQuorum(node.limbo)]_vars
+
 \* The replication is finished with the cluster split in two groups, each
 \* consistent inside.
 WitnessQuiescentSplit ==

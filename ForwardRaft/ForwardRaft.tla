@@ -115,6 +115,7 @@ SetData(v, s) == [s EXCEPT !.data = v]
 SetDataRejected(v, s) == [s EXCEPT !.data_rejected = v]
 SetJournal(v, s) == [s EXCEPT !.journal = v]
 SetJournalVclock(v, s) == [s EXCEPT !.journal_vclock = v]
+SetValidAcks(v, s) == [s EXCEPT !.valid_acks = v]
 SetMadeTxn(v, s) == [s EXCEPT !.made_txn = v]
 SetAppliers(v, s) == [s EXCEPT !.appliers = v]
 
@@ -137,12 +138,31 @@ VclockGE(a, b) == \A i \in NodeIDs: a[i] >= b[i]
 \* The journal vclock - the per-origin count of the rows - then says which
 \* entries the node has without scanning the journal. The own component is
 \* the LSN of the last own row.
+\*
+\* The append is also the ack: the applier sends the vclock to the origin
+\* right after the write, with the Raft term of that moment. The origin
+\* counts the ack only if that term is not above the one it wrote the row in
+\* - the one it waits in. The verdict is remembered per origin for its latest
+\* row, the only one it can be waiting on, so that the ack keeps its term
+\* when the node moves on before the origin gets to count it. The origin's
+\* term is on a PROMOTE; a txn is written in the term of the owner's applied
+\* PROMOTE, which precedes the txn on every delivery path; a CONFIRM is never
+\* waited on. The own rows go the same way: the own write is an ack too.
 JournalAppend(entry, node) ==
-    IF Assert(entry.lsn = node.journal_vclock[entry.origin_id] + 1,
+    LET origin == entry.origin_id
+        row_term == CASE entry.type = EntryTypePromote -> entry.raft_term
+                      [] entry.type = EntryTypeTransaction -> node.limbo_term_map[origin]
+                      [] entry.type = EntryTypeConfirm -> 0
+        valid_acks == IF node.raft_term <= row_term
+                      THEN node.valid_acks \union {origin}
+                      ELSE node.valid_acks \ {origin}
+    IN
+    IF Assert(entry.lsn = node.journal_vclock[origin] + 1,
               "Rows of one origin arrive strictly in order")
     THEN SetJournal(ArrAppend(entry, node.journal),
-         SetJournalVclock(VclockSet(node.journal_vclock, entry.origin_id, entry.lsn),
-         node))
+         SetJournalVclock(VclockSet(node.journal_vclock, origin, entry.lsn),
+         SetValidAcks(valid_acks,
+         node)))
     ELSE node
 
 \* The LSN for the next own row.
@@ -251,12 +271,24 @@ PromotionsRemoveCovered(term_map, promotions) ==
 HasEntry(node, entry) ==
     entry.lsn <= node.journal_vclock[entry.origin_id]
 
-\* Count how many nodes have a specific entry and have term <= given term
-\* This ensures we only count acknowledgments from nodes that haven't moved to a higher term
-CountNodesWithEntry(entry, max_term) ==
-    Cardinality({nid \in NodeIDs:
-        /\ HasEntry(Nodes[nid], entry)
-        /\ Nodes[nid].raft_term <= max_term})
+\* The acks for an entry which its origin can count: the nodes having the
+\* entry, whose ack carried a term not above the origin's. An ack with a
+\* higher term never counts - the relay processes the term first and the
+\* origin steps down (relay.cc tx_status_update). The term is the one the
+\* node had when it appended the entry, not its current one, see
+\* JournalAppend: the ack can be in flight while the node moves to a higher
+\* term, and the origin still counts it on arrival. The entry is the origin's
+\* latest row - it writes nothing else while waiting - and the origin's own
+\* write is always among the acks.
+CountAcksForEntry(entry) ==
+    LET origin == entry.origin_id
+    IN
+    IF Assert(origin \in Nodes[origin].valid_acks,
+              "The origin's own write of the entry is an ack")
+    THEN Cardinality({nid \in NodeIDs:
+             /\ HasEntry(Nodes[nid], entry)
+             /\ origin \in Nodes[nid].valid_acks})
+    ELSE 0
 
 \* Check if all journal entries from 'from' node are present in 'to' node
 JournalIsFullyReplicatedTo(from, to) ==
@@ -297,6 +329,9 @@ NodeNew(nid) == [
     data_rejected |-> {},
     \* The count of the journal rows of each origin.
     journal_vclock |-> [i \in NodeIDs |-> 0],
+    \* The origins whose latest row this node acked with a term not above
+    \* the row's own, see JournalAppend.
+    valid_acks |-> {},
     \* Whether the node created a transaction since it was elected. A node
     \* creates at most one transaction per term - a state space reduction.
     made_txn |-> FALSE
@@ -577,7 +612,7 @@ LimboConfirmPromote(nid) ==
               \/ PromoteCanBeConfirmed(node, promote_entry),
               "A majority quorum never confirms behind the leader's back")
     /\ PromoteCanBeConfirmed(node, promote_entry)
-    /\ CountNodesWithEntry(promote_entry, node.raft_term) >= Quorum
+    /\ CountAcksForEntry(promote_entry) >= Quorum
     \* ---
     /\ Assert(promote_entry.raft_term > node.limbo_term,
               "Local pending promote's term is always bigger than the last confirmed limbo term")
@@ -621,7 +656,7 @@ LimboConfirmTransaction(nid) ==
     IN
     /\ node.limbo_state = LimboStateLeader
     /\ TxnIsValid(node.limbo)
-    /\ CountNodesWithEntry(txn_entry, node.raft_term) >= Quorum
+    /\ CountAcksForEntry(txn_entry) >= Quorum
     \* ---
     /\ LET confirm_entry == EntryNewConfirm(
                nid,

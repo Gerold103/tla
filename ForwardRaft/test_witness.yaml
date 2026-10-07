@@ -7,7 +7,8 @@
 #
 # Three data nodes with quorum 1 reach every scenario in the fewest steps:
 # every node elects itself, confirms alone, and every refusal is possible.
-# The cheap ones go first.
+# The exception is the delayed ack: the own ack is never stale, so it needs a
+# quorum of two. The cheap ones go first.
 
 configs:
 
@@ -64,6 +65,15 @@ configs:
     quorum: 1
     max_term: 3
     transactions: 2
+
+  - name: WitnessConfirmOnDelayedAck
+    note: a CONFIRM whose quorum holds only with an ack from a node that moved to a higher term since
+    property: WitnessConfirmOnDelayedAck
+    data_nodes: 3
+    voters: 0
+    quorum: 2
+    max_term: 3
+    transactions: 1
 
   - name: WitnessQuiescentSplit
     note: replication finished with the cluster split, one pair still connected
