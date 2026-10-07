@@ -810,9 +810,12 @@ ReplicateTransaction(entry, src_nid, dst_nid) ==
                   JournalAppend(entry,
                   SetTxnRejected(entry.data, dst_node)))
     ELSE
-        \* A transaction from a non-owner in a current term - its author
-        \* thinks it owns the limbo. A fork.
-        LinkCloseFromTo(src_nid, dst_nid)
+        \* A transaction from a non-owner in the current term can't come: the
+        \* owner's applied term is the limbo's, and every other origin's is
+        \* below it (LimboTermMapInvariant). A fork shows on the PROMOTE
+        \* preceding the transaction in its origin's journal, refused first.
+        /\ Assert(FALSE, "A non-owner's transaction is always from an old term")
+        /\ UNCHANGED Nodes
 
 \* Main replication action: the applier of dst applies the next entry from
 \* src.
@@ -948,14 +951,24 @@ LimboOwnerInvariant ==
         IN TxnIsValid(node.limbo) =>
             node.limbo.origin_id = node.limbo_owner
 
-\* A term hosts at most one confirmed PROMOTE: no node holds one applied term
+\* The applied term map against the applied limbo term. The map is the one of
+\* the applied PROMOTE, whose own term is the highest in it and is the limbo
+\* term, so no applied term is above the limbo's, and the owner's is the
+\* limbo's - once a PROMOTE is applied at all, the initial owner has none. A
+\* term hosts at most one confirmed PROMOTE: no node holds one applied term
 \* for two origins. The filters keep it so - a PROMOTE of a term taken in the
 \* map is refused, and a pending PROMOTE at or below the applied limbo term is
-\* poisoned, its CONFIRM refused.
+\* poisoned, its CONFIRM refused. Together: a non-owner's applied term is
+\* strictly below the limbo's, which is what makes a non-owner's transaction
+\* always an old-term one.
 LimboTermMapInvariant ==
     \A nid \in NodeIDs:
-        LET map == Nodes[nid].limbo_term_map
-        IN \A a \in NodeIDs, b \in NodeIDs:
+        LET node == Nodes[nid]
+            map == node.limbo_term_map
+        IN
+        /\ \A o \in NodeIDs: map[o] <= node.limbo_term
+        /\ node.limbo_term > 1 => map[node.limbo_owner] = node.limbo_term
+        /\ \A a \in NodeIDs, b \in NodeIDs:
             a # b /\ map[a] > 0 => map[a] # map[b]
 
 TotalInvariant ==
