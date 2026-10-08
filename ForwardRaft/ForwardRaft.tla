@@ -648,10 +648,17 @@ LimboCreateTransaction(nid) ==
     /\ node.limbo_state = LimboStateLeader
     /\ ~TxnIsValid(node.limbo)
     /\ ~node.made_txn
+    /\ TransactionsToDo # {}
     \* ---
-    /\ \E txn_data \in TransactionsToDo:
-        LET entry == EntryNewTransaction(nid, NextLSN(nid, node), txn_data)
-        IN
+    \* The transactions are interchangeable until created, so any one of the
+    \* remaining ones is as good as another: a deterministic pick instead of
+    \* a successor per transaction. The symmetry on the transactions stays
+    \* needed - the pick fixes the name of the first transaction created, not
+    \* who creates it, and the two orders of creators are each other's
+    \* renaming.
+    /\ LET txn_data == CHOOSE t \in TransactionsToDo: TRUE
+           entry == EntryNewTransaction(nid, NextLSN(nid, node), txn_data)
+       IN
         /\ TransactionsToDo' = TransactionsToDo \ {txn_data}
         /\ Nodes' = NodesUpdate(nid,
                     SetLimbo(entry,
