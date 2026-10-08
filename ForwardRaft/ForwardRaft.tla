@@ -69,14 +69,19 @@ CONSTANT LimboStateLeader
 CONSTANT NodeRoleCandidate
 CONSTANT NodeRoleVoter
 
-\* Symmetry - all nodes and transactions are equivalent
-Perms == Permutations(NodeIDs) \union Permutations(AllTransactions)
-
 \* Maximum expected journal length per node
 MaxJournalLength == (MaxTerm * 2 + Cardinality(AllTransactions) * 2) * Cardinality(NodeIDs)
 
 \* The nodes receiving replication.
 DataNodes == NodeIDs \ VoterIDs
+
+\* Symmetry - the data nodes are equivalent among themselves, so are the
+\* voters and the transactions. Sound only because the role is in the state:
+\* a permutation across the roles maps every reachable state to an
+\* unreachable one, so the role-mixing permutations would merge nothing, and
+\* only cost - every permutation is applied to every state.
+Perms == Permutations(DataNodes) \union Permutations(VoterIDs)
+         \union Permutations(AllTransactions)
 
 \* Any two majorities intersect, so the elections and the acks make forks
 \* impossible. The checks holding only then are asserted under this guard.
