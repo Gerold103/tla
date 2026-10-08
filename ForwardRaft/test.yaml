@@ -1,6 +1,10 @@
 # The ForwardRaft test matrix. gen.py turns each entry into <name>.cfg from
-# template.cfg. The order is the run order - the smoke tests first. Every
-# config must pass.
+# template.cfg. Every config must pass. The order is the run order, by the
+# estimated size, smallest first, so that a run gets through as many configs
+# as it can before the ones taking a day. The names carry the position, so a
+# shell glob over the generated dir lists them in this order. Measured on a
+# laptop with two transactions: d2v0_q2_t4 and d2v1_q2_t4 in seconds,
+# d3v0_q2_t3 10 s, bad d2v0_q1_t4 41 s (2.6M states); the rest is estimated.
 #
 # Depth: max_term 4 allows three promotions, which is what the deepest known
 # pattern needs - a chain through a chain, a poisoned entry covered by a
@@ -12,35 +16,7 @@
 
 configs:
 
-# Smoke tests
-
-  - name: majority_d3v0_q2_t3
-    note: smoke test, majority
-    data_nodes: 3
-    voters: 0
-    quorum: 2
-    max_term: 3
-    transactions: 2
-
-  - name: bad_d3v0_q1_t3
-    note: smoke test, two-sided forks
-    data_nodes: 3
-    voters: 0
-    quorum: 1
-    max_term: 3
-    transactions: 2
-
-# Proper tests
-
-  - name: majority_d3v0_q2_t4
-    note: the full majority run
-    data_nodes: 3
-    voters: 0
-    quorum: 2
-    max_term: 4
-    transactions: 2
-
-  - name: majority_d2v0_q2_t4
+  - name: 01_majority_d2v0_q2_t4
     note: every ack required, no fork possible
     data_nodes: 2
     voters: 0
@@ -48,7 +24,7 @@ configs:
     max_term: 4
     transactions: 2
 
-  - name: majority_d2v1_q2_t4
+  - name: 02_majority_d2v1_q2_t4
     note: a voter decides elections, data nodes ack alone
     data_nodes: 2
     voters: 1
@@ -56,15 +32,15 @@ configs:
     max_term: 4
     transactions: 2
 
-  - name: majority_d3v2_q3_t4
-    note: two voters, every data node must ack; covers d3v1_q3 with one voter idle
+  - name: 03_majority_d3v0_q2_t3
+    note: smoke test, majority
     data_nodes: 3
-    voters: 2
-    quorum: 3
-    max_term: 4
+    voters: 0
+    quorum: 2
+    max_term: 3
     transactions: 2
 
-  - name: bad_d2v0_q1_t4
+  - name: 04_bad_d2v0_q1_t4
     note: every node elects itself
     data_nodes: 2
     voters: 0
@@ -72,7 +48,31 @@ configs:
     max_term: 4
     transactions: 2
 
-  - name: bad_d3v0_q1_t4
+  - name: 05_bad_d3v0_q1_t3
+    note: smoke test, two-sided forks
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 3
+    transactions: 2
+
+  - name: 06_majority_d3v0_q2_t4
+    note: the full majority run
+    data_nodes: 3
+    voters: 0
+    quorum: 2
+    max_term: 4
+    transactions: 2
+
+  - name: 07_majority_d3v2_q3_t4
+    note: two voters, every data node must ack; covers d3v1_q3 with one voter idle
+    data_nodes: 3
+    voters: 2
+    quorum: 3
+    max_term: 4
+    transactions: 2
+
+  - name: 08_bad_d3v0_q1_t4
     note: three sides, all links can break; covers every bad config with voters
     data_nodes: 3
     voters: 0

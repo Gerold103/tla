@@ -33,8 +33,9 @@ time. `--fpmem` and `--checkpoint` are forwarded to TLC when given.
         --tlc "..." --spec ForwardRaft/ForwardRaftWitness.tla var/witness/*.cfg
 
 Aliases are not visible to a subprocess, so the TLC command has to be the
-expanded one. The shell glob gives the configs in name order; to run them in
-the matrix order, or a subset, list them explicitly.
+expanded one. The test config names carry their position in the matrix, so
+the shell glob runs them in the matrix order; for a subset, list them
+explicitly.
 
 ## The test matrix
 
@@ -43,8 +44,8 @@ asserts inside the spec, gated on `IsMajorityQuorum`, so they are active in
 the `majority_*` configs and inactive in the `bad_*` ones automatically.
 Success is every config passing.
 
-Naming: `d<data nodes>v<voters>_q<quorum>_t<MaxTerm>`. The limbo owner at
-start is always `n1`; voters are the highest node ids.
+Naming: `<position>_<majority|bad>_d<data nodes>v<voters>_q<quorum>_t<MaxTerm>`.
+The limbo owner at start is always `n1`; voters are the highest node ids.
 
 Depth: `MaxTerm = 4` allows three promotions, which is what the deepest
 known pattern needs - a chain through a chain, a poisoned entry covered by
@@ -55,16 +56,19 @@ Voters in the spec vote and observe terms but receive no rows (a state space
 reduction), so a PROMOTE quorum above the data node count can never be met.
 Such combinations are left out.
 
-| config                | nodes | quorum | what it exercises                               |
-|-----------------------|-------|--------|-------------------------------------------------|
-| majority_d3v0_q2_t3   | 3     | 2 of 3 | smoke test, majority                            |
-| bad_d3v0_q1_t3        | 3     | 1 of 3 | smoke test, two-sided forks                     |
-| majority_d3v0_q2_t4   | 3     | 2 of 3 | the full majority run                           |
-| majority_d2v0_q2_t4   | 2     | 2 of 2 | every ack required, no fork possible            |
-| majority_d2v1_q2_t4   | 2+1   | 2 of 3 | a voter decides elections, data nodes ack alone |
-| majority_d3v2_q3_t4   | 3+2   | 3 of 5 | two voters, every data node must ack            |
-| bad_d2v0_q1_t4        | 2     | 1 of 2 | every node elects itself                        |
-| bad_d3v0_q1_t4        | 3     | 1 of 3 | three sides, all links can break                |
+The matrix is ordered by the estimated size, smallest first, so that a run
+gets through as many configs as it can before the ones taking a day.
+
+| config                   | nodes | quorum | what it exercises                               |
+|--------------------------|-------|--------|-------------------------------------------------|
+| 01_majority_d2v0_q2_t4   | 2     | 2 of 2 | every ack required, no fork possible            |
+| 02_majority_d2v1_q2_t4   | 2+1   | 2 of 3 | a voter decides elections, data nodes ack alone |
+| 03_majority_d3v0_q2_t3   | 3     | 2 of 3 | smoke test, majority                            |
+| 04_bad_d2v0_q1_t4        | 2     | 1 of 2 | every node elects itself                        |
+| 05_bad_d3v0_q1_t3        | 3     | 1 of 3 | smoke test, two-sided forks                     |
+| 06_majority_d3v0_q2_t4   | 3     | 2 of 3 | the full majority run                           |
+| 07_majority_d3v2_q3_t4   | 3+2   | 3 of 5 | two voters, every data node must ack            |
+| 08_bad_d3v0_q1_t4        | 3     | 1 of 3 | three sides, all links can break                |
 
 Redundancy: a config with one node never acting is a subset of the same
 config with that node present, and `Quiescent`, `StatesEqual` range over the
