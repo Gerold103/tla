@@ -27,17 +27,19 @@ time. `--fpmem` and `--checkpoint` are forwarded to TLC when given.
     python3 ForwardRaft/gen.py ForwardRaft/test.yaml var/test
     python3 ForwardRaft/gen.py ForwardRaft/test_witness.yaml var/witness
 
-    python3 tools/run.py --interval 60 --workers auto \
-        --tlc "java -XX:+UseParallelGC -cp /path/to/tla2tools.jar tlc2.TLC" \
+    python3 tools/run.py --tlc /path/to/tla2tools.jar --java "java -XX:+UseParallelGC" \
+        --java-heap 48g --fpmem 0.5 --checkpoint 30 --workers auto --interval 60 \
         --spec ForwardRaft/ForwardRaft.tla var/test/*.cfg
 
-    python3 tools/run.py --witness --interval 60 --workers auto \
-        --tlc "..." --spec ForwardRaft/ForwardRaftWitness.tla var/witness/*.cfg
+    python3 tools/run.py --tlc /path/to/tla2tools.jar --witness \
+        --spec ForwardRaft/ForwardRaftWitness.tla var/witness/*.cfg
 
-Aliases are not visible to a subprocess, so the TLC command has to be the
-expanded one. The test config names carry their position in the matrix, so
-the shell glob runs them in the matrix order; for a subset, list them
-explicitly.
+`--java` is the JVM with its options as one string (aliases are not visible
+to a subprocess); `--java-heap` is its `-Xmx`, `--fpmem` the fingerprint
+set's share of it, `--checkpoint` the minutes between TLC checkpoints - see
+`run.py --help` for what each means and why a big run wants all three. The
+test config names carry their position in the matrix, so the shell glob runs
+them in the matrix order; for a subset, list them explicitly.
 
 ## The test matrix
 

@@ -2,17 +2,23 @@
 """Run TLC on a list of configs, one at a time, stopping at the first failure.
 
 Usage:
-    run.py --tlc "<tlc command>" --spec SPEC.tla [--workers N|auto]
-           [--fpmem X] [--checkpoint N] [--interval N] [--witness] CFG...
+    run.py --tlc tla2tools.jar --spec SPEC.tla [--java "<java and its options>"]
+           [--java-heap SIZE] [--fpmem X] [--workers N|auto] [--checkpoint N]
+           [--interval N] [--witness] CFG...
 
-The TLC command is whatever starts TLC on this machine, for example
-    "java -XX:+UseParallelGC -cp /Library/Java/Extensions/tla2tools.jar tlc2.TLC"
+The command run for each config is
+    <java> [-Xmx<heap>] -cp <jar> tlc2.TLC -workers W [-fpmem X] [-checkpoint N]
+           -config <cfg> <spec>
+in the spec's directory. --java is the JVM binary with its own options as one
+string, "java" by default, for example
+    --java "java -XX:+UseParallelGC -Dtlc2.tool.queue.IStateQueue=MemStateQueue"
 Aliases are not visible to a subprocess, so pass the expanded command. The
-script appends "-workers W -config <cfg> <spec>" and runs in the spec's
-directory. --fpmem and --checkpoint are forwarded as TLC's -fpmem and
--checkpoint when given, and left out otherwise, so TLC's own defaults apply.
-Arguments which are not .cfg files are skipped, so a glob over a directory
-holding the outputs too is fine.
+JVM options must precede the jar, TLC's own options follow it; the script
+puts each in its place. --java-heap, --fpmem and --checkpoint are passed only
+when given, otherwise the JVM's and TLC's defaults apply - see --help for
+what the defaults are and why they matter on a big run. Arguments which are
+not .cfg files are skipped, so a glob over a directory holding the outputs
+too is fine.
 
 By default every config must pass. With --witness every config is a
 reachability witness: it must end with TLC violating the invariant or action
@@ -108,13 +114,31 @@ def verdict(name, passed, text, witness):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--tlc", required=True, help="the TLC command")
+    parser.add_argument("--tlc", required=True, metavar="JAR",
+                        help="path to tla2tools.jar")
     parser.add_argument("--spec", required=True, help="the .tla module to check")
+    parser.add_argument("--java", default="java", metavar="CMD",
+                        help="the JVM binary with its options, as one string; "
+                        "default 'java'. Example: 'java -XX:+UseParallelGC "
+                        "-Dtlc2.tool.queue.IStateQueue=MemStateQueue' - the "
+                        "latter keeps the state queue in memory instead of "
+                        "disk pool files")
+    parser.add_argument("--java-heap", metavar="SIZE",
+                        help="the JVM heap, passed as -Xmx: e.g. 48g. All of TLC "
+                        "lives in it - the fingerprint set, the state queue, "
+                        "the states the workers build. Without it the JVM takes "
+                        "a quarter of the machine's RAM, whatever is free")
+    parser.add_argument("--fpmem", metavar="X",
+                        help="TLC -fpmem: the heap share of the fingerprint set "
+                        "(one 8-byte fingerprint per distinct state): a fraction "
+                        "of the heap, or MB if above 1. TLC's default is 0.25. "
+                        "The rest of the heap is for the workers and the queue; "
+                        "0.5 of a 48g heap holds 3e9 states and leaves 24g")
     parser.add_argument("--workers", default="auto", help="TLC worker count, default auto")
-    parser.add_argument("--fpmem", help="TLC -fpmem: fingerprint set memory, "
-                        "a fraction of the heap or a size in MB")
-    parser.add_argument("--checkpoint", help="TLC -checkpoint: minutes between "
-                        "checkpoints")
+    parser.add_argument("--checkpoint", metavar="MIN",
+                        help="TLC -checkpoint: minutes between checkpoints, "
+                        "written under states/ next to the spec; a dead run "
+                        "resumes from one with TLC's -recover states/<id>")
     parser.add_argument("--interval", type=int, default=60,
                         help="progress report period, seconds")
     parser.add_argument("--witness", action="store_true",
@@ -129,6 +153,10 @@ def main():
     if not cfgs:
         print("no .cfg files given")
         return 2
+    java = shlex.split(args.java)
+    if args.java_heap is not None:
+        java.append("-Xmx" + args.java_heap)
+    java += ["-cp", os.path.abspath(args.tlc), "tlc2.TLC"]
     tlc_opts = ["-workers", args.workers]
     if args.fpmem is not None:
         tlc_opts += ["-fpmem", args.fpmem]
@@ -138,7 +166,7 @@ def main():
     for i, cfg in enumerate(cfgs, 1):
         name = os.path.basename(cfg)[:-len(".cfg")]
         out_path = cfg[:-len(".cfg")] + "_out.txt"
-        cmd = shlex.split(args.tlc) + tlc_opts + [
+        cmd = java + tlc_opts + [
             "-config", os.path.relpath(cfg, cwd),
             os.path.relpath(spec, cwd),
         ]
