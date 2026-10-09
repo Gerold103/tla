@@ -14,9 +14,14 @@
 \*   committing old-term transactions (fixing split-brain issue)
 \* - Split-brain detection: a node refuses an entry contradicting its state
 \*   and stops the replication link it came from. With a majority quorum no
-\*   link ever breaks. With a smaller one the forks are inevitable, and the
-\*   nodes must end up in consistent groups with all the links between the
-\*   groups broken.
+\*   link ever breaks. With a smaller one the forks are inevitable; what is
+\*   checked then is that any two nodes holding the same rows have the same
+\*   state, and that a node accepting another's rows covers its decisions.
+\*   The detection is not always two-sided, see JournalDeterminesStateInvariant.
+\*
+\* Out of scope: several queued transactions per owner (one at a time here,
+\* the all-or-nothing case), ROLLBACK rows (a timeout rollback by the owner),
+\* DEMOTE rows.
 \*
 
 EXTENDS TLC, Integers, Sequences, FiniteSets
@@ -125,9 +130,6 @@ SetMadeTxn(v, s) == [s EXCEPT !.made_txn = v]
 SetAppliers(v, s) == [s EXCEPT !.appliers = v]
 
 \* Array operations
-ArrLen(s) == Len(s)
-ArrLast(s) == s[Len(s)]
-ArrIsEmpty(s) == Len(s) = 0
 ArrAppend(v, s) == Append(s, v)
 ArrContains(v, s) == \E i \in DOMAIN(s): s[i] = v
 
@@ -418,23 +420,31 @@ NodeBecomeLeader(nid) ==
                 node)))
     /\ UNCHANGED TransactionsToDo
 
-\* Node observes higher term from another node and steps down. The vote is
+\* Node observes a higher term from another node and steps down. The vote is
 \* reset - it is per term. The terms travel both with the entries and with
-\* the acks, so one open link in any direction is enough.
-NodeObserveHigherTerm(dst_nid, src_nid) ==
-    LET dst_node == Nodes[dst_nid]
-        src_term == Nodes[src_nid].raft_term
+\* the acks, so one open link in any direction is enough. The step is per
+\* term, not per node it is seen from: the result is the same whoever has
+\* it, so the duplicates are not even built.
+NodeObserveHigherTerm(nid) ==
+    LET node == Nodes[nid]
     IN
-    /\ src_nid # dst_nid
-    /\ src_term > dst_node.raft_term
-    /\ LinkIsOpenFromTo(src_nid, dst_nid) \/ LinkIsOpenFromTo(dst_nid, src_nid)
-    \* ---
-    /\ Nodes' = NodesUpdate(dst_nid,
-                SetRaftTerm(src_term,
-                SetRaftVote(NULL,
-                SetRaftState(RaftStateFollower,
-                SetLimboState(LimboStateReplica,
-                dst_node)))))
+    \* Cheap check first: the sets below are built only when there is a
+    \* higher term somewhere at all. Not an \E - TLC splits an \E conjunct of
+    \* an action into one successor per witness, duplicates included.
+    /\ ~\A other \in NodeIDs: Nodes[other].raft_term <= node.raft_term
+    /\ LET peers == {other \in NodeIDs \ {nid}:
+                        LinkIsOpenFromTo(other, nid) \/ LinkIsOpenFromTo(nid, other)}
+           terms == {Nodes[other].raft_term : other \in peers}
+       IN
+       \E term \in terms:
+        /\ term > node.raft_term
+        \* ---
+        /\ Nodes' = NodesUpdate(nid,
+                    SetRaftTerm(term,
+                    SetRaftVote(NULL,
+                    SetRaftState(RaftStateFollower,
+                    SetLimboState(LimboStateReplica,
+                    node)))))
     /\ UNCHANGED TransactionsToDo
 
 --------------------------------------------------------------------------------
@@ -472,7 +482,11 @@ PromoteCanBeWritten(node, term, origin) ==
         /\ PromoteIsValid(node.limbo_promotions[nid]) =>
            node.limbo_promotions[nid].raft_term # term
 
-\* The latest pending promotion which still can get confirmed here.
+\* The latest pending promotion not poisoned here. It may still be behind the
+\* node's confirmed vclock - written before a CONFIRM applied here, by an
+\* owner confirming behind the author's back, a quorum at or below half - and
+\* then never confirmable here. A chain from it inherits that, and fails at
+\* its own confirmation as the fork it is. The code chains the same way.
 PromotionsGetLatestLive(node) ==
     LET promotions == node.limbo_promotions
         live == {nid \in DOMAIN(promotions):
@@ -560,9 +574,7 @@ LimboWritePromote(nid) ==
     /\ \A other \in NodeIDs:
         PromoteIsValid(node.limbo_promotions[other]) =>
         node.limbo_promotions[other].raft_term < node.raft_term
-    \* The own PROMOTE goes through the same filter as the received ones. A
-    \* leader elected in a term already taken by another one never claims
-    \* the limbo.
+    \* The own PROMOTE goes through the same filter as the received ones.
     /\ PromoteCanBeWritten(node, node.raft_term, nid)
     \* ---
     \* Chained promotion. An older pending PROMOTE, even one from another
@@ -852,7 +864,7 @@ Next ==
     \/ \E nid \in NodeIDs: NodeBumpTerm(nid)
     \/ \E nid \in NodeIDs, cand \in NodeIDs: NodeVote(nid, cand)
     \/ \E nid \in NodeIDs: NodeBecomeLeader(nid)
-    \/ \E src \in NodeIDs, dst \in NodeIDs: NodeObserveHigherTerm(dst, src)
+    \/ \E nid \in NodeIDs: NodeObserveHigherTerm(nid)
     \/ \E nid \in NodeIDs: LimboWritePromote(nid)
     \/ \E nid \in NodeIDs: LimboConfirmPromote(nid)
     \/ \E nid \in NodeIDs: LimboCreateTransaction(nid)

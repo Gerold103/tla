@@ -9,6 +9,8 @@
   entry of the matrix. No defaults. Give the two matrices different dirs:
   they run against different modules.
 - `ForwardRaftWitness.tla` - the witness operators, extends `ForwardRaft`.
+- `ForwardRaft.cfg` - a hand-written majority config (3 nodes, 2 of 3,
+  `MaxTerm 3`) for a single quick run outside the matrices.
 
 The out dirs hold runtime files only: the generated configs and the run
 outputs. Delete them when done.
