@@ -715,6 +715,11 @@ LinkCloseFromTo(src, dst) ==
     /\ Assert(~IsMajorityQuorum, "A majority quorum never refuses anything")
     /\ Nodes' = NodesUpdate(dst, SetAppliers(node.appliers \ {src}, node))
 
+\* Refuse a row offered by several sources: it came over one of the links,
+\* and that one closes - a branch per source.
+LinkCloseFromAnyOfTo(srcs, dst) ==
+    \E src \in srcs: LinkCloseFromTo(src, dst)
+
 \* Find the next journal entry to replicate (first one not present on destination)
 \* Returns 0 if destination has all entries, otherwise returns the index
 \* TODO: makes sense to make a binary search?
@@ -735,12 +740,12 @@ NextEntryToReplicate(src_node, dst_node) ==
 \* be recognized. A pending PROMOTE, however new, changes nothing about the
 \* leadership: the limbo leader is demoted by the Raft term it observes or
 \* by the CONFIRM it applies, see LimboStateInvariant.
-ReplicatePromote(entry, src_nid, dst_nid) ==
+ReplicatePromote(entry, srcs, dst_nid) ==
     LET dst_node == Nodes[dst_nid]
         origin == entry.origin_id
     IN
     IF ~PromoteCanBeWritten(dst_node, entry.raft_term, origin)
-    THEN LinkCloseFromTo(src_nid, dst_nid)
+    THEN LinkCloseFromAnyOfTo(srcs, dst_nid)
     ELSE
         \* A chain carrying this PROMOTE's term is always delivered after it,
         \* so it is never covered on arrival.
@@ -751,13 +756,13 @@ ReplicatePromote(entry, src_nid, dst_nid) ==
 \* Apply CONFIRM on PROMOTE entry to destination node. The CONFIRM of a
 \* PROMOTE not passing the filter is a fork - its author confirmed it without
 \* knowing something applied here.
-ReplicateConfirmPromote(entry, src_nid, dst_nid, promote) ==
+ReplicateConfirmPromote(entry, srcs, dst_nid, promote) ==
     LET dst_node == Nodes[dst_nid]
     IN
     /\ Assert(entry.confirm_lsn = promote.confirm_lsn,
              "CONFIRM lsn must match pending PROMOTE confirm_lsn")
     /\ IF ~PromoteCanBeConfirmed(dst_node, promote)
-       THEN LinkCloseFromTo(src_nid, dst_nid)
+       THEN LinkCloseFromAnyOfTo(srcs, dst_nid)
        ELSE
            \* The ownership went to the PROMOTE's origin. A limbo leader
            \* which confirmed its own PROMOTE with this newer one pending
@@ -780,7 +785,7 @@ ReplicateConfirmPromote(entry, src_nid, dst_nid, promote) ==
            /\ Nodes' = NodesUpdate(dst_nid, new_node)
 
 \* Apply a CONFIRM entry to destination node
-ReplicateConfirm(entry, src_nid, dst_nid) ==
+ReplicateConfirm(entry, srcs, dst_nid) ==
     LET dst_node == Nodes[dst_nid]
         current_lsn == dst_node.limbo_vclock[entry.owner_id]
         promote == PromotionsFindPending(entry.origin_id, entry.confirm_lsn, dst_node.limbo_promotions)
@@ -794,7 +799,7 @@ ReplicateConfirm(entry, src_nid, dst_nid) ==
             /\ txn_entry.lsn <= entry.confirm_lsn
     IN
     IF PromoteIsValid(promote)
-    THEN ReplicateConfirmPromote(entry, src_nid, dst_nid, promote)
+    THEN ReplicateConfirmPromote(entry, srcs, dst_nid, promote)
     ELSE IF entry.confirm_lsn <= current_lsn
     THEN Nodes' = NodesUpdate(dst_nid, JournalAppend(entry, dst_node))
     ELSE IF is_txn_confirm
@@ -805,10 +810,10 @@ ReplicateConfirm(entry, src_nid, dst_nid) ==
                       SetLimbo(TxnEmpty,
                       JournalAppend(entry,
                       SetTxnCommitted(txn_entry.data, dst_node)))))
-    ELSE LinkCloseFromTo(src_nid, dst_nid)
+    ELSE LinkCloseFromAnyOfTo(srcs, dst_nid)
 
 \* Apply a transaction entry to destination node
-ReplicateTransaction(entry, src_nid, dst_nid) ==
+ReplicateTransaction(entry, dst_nid) ==
     LET dst_node == Nodes[dst_nid]
         is_from_owner == entry.origin_id = dst_node.limbo_owner
         \* The entry carries no term. The origin's term is derived from the
@@ -841,19 +846,27 @@ ReplicateTransaction(entry, src_nid, dst_nid) ==
         /\ Assert(FALSE, "A non-owner's transaction is always from an old term")
         /\ UNCHANGED Nodes
 
-\* Main replication action: the applier of dst applies the next entry from
-\* src.
-ReplicateNextEntry(src_nid, dst_nid) ==
-    LET src_node == Nodes[src_nid]
-        dst_node == Nodes[dst_nid]
+\* Main replication action: an applier of the node applies the next entry
+\* from its source. The sources often offer the same row - the first one the
+\* node lacks - and applying it doesn't depend on who sent it, so the step is
+\* per row, each row once however many sources offer it. Only a refusal
+\* depends on the source: it closes the link the row came over, so a refused
+\* row branches over its sources.
+ReplicateNextEntry(dst_nid) ==
+    LET dst_node == Nodes[dst_nid]
+        \* Each open source with the index of its first row missing here.
+        offers == {<<src, NextEntryToReplicate(Nodes[src], dst_node)>> :
+                      src \in dst_node.appliers}
+        pending == {o \in offers : o[2] # 0}
+        entries == {Nodes[o[1]].journal[o[2]] : o \in pending}
     IN
     /\ dst_node.role # NodeRoleVoter
-    /\ LET next_idx == NextEntryToReplicate(src_node, dst_node) IN
-       /\ next_idx # 0
-       /\ LET entry == src_node.journal[next_idx] IN
-          /\ CASE entry.type = EntryTypePromote -> ReplicatePromote(entry, src_nid, dst_nid)
-               [] entry.type = EntryTypeConfirm -> ReplicateConfirm(entry, src_nid, dst_nid)
-               [] entry.type = EntryTypeTransaction -> ReplicateTransaction(entry, src_nid, dst_nid)
+    /\ \E entry \in entries:
+        LET srcs == {o[1] : o \in {p \in pending : Nodes[p[1]].journal[p[2]] = entry}}
+        IN
+        CASE entry.type = EntryTypePromote -> ReplicatePromote(entry, srcs, dst_nid)
+          [] entry.type = EntryTypeConfirm -> ReplicateConfirm(entry, srcs, dst_nid)
+          [] entry.type = EntryTypeTransaction -> ReplicateTransaction(entry, dst_nid)
     /\ UNCHANGED TransactionsToDo
 --------------------------------------------------------------------------------
 \*
@@ -869,8 +882,7 @@ Next ==
     \/ \E nid \in NodeIDs: LimboConfirmPromote(nid)
     \/ \E nid \in NodeIDs: LimboCreateTransaction(nid)
     \/ \E nid \in NodeIDs: LimboConfirmTransaction(nid)
-    \/ \E dst \in NodeIDs: \E src \in Nodes[dst].appliers:
-        ReplicateNextEntry(src, dst)
+    \/ \E nid \in NodeIDs: ReplicateNextEntry(nid)
 
 --------------------------------------------------------------------------------
 \*
