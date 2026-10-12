@@ -2,14 +2,19 @@
 """Run TLC on a list of configs, one at a time, stopping at the first failure.
 
 Usage:
-    run.py --tlc tla2tools.jar --spec SPEC.tla [--java "<java and its options>"]
-           [--java-heap SIZE] [--fpmem X] [--workers N|auto] [--checkpoint N]
-           [--interval N] [--witness] CFG...
+    run.py --tlc tla2tools.jar --spec SPEC.tla --metadir DIR
+           [--java "<java and its options>"] [--java-heap SIZE] [--fpmem X]
+           [--workers N|auto] [--checkpoint N] [--interval N] [--witness] CFG...
 
 The command run for each config is
     <java> [-Xmx<heap>] -cp <jar> tlc2.TLC -workers W [-fpmem X] [-checkpoint N]
-           -config <cfg> <spec>
-in the spec's directory. --java is the JVM binary with its own options as one
+           -metadir DIR/<config name> -config <cfg> <spec>
+in the spec's directory. The metadir is where TLC keeps its run files - the
+disk state queue, the fingerprint spills, the checkpoints. TLC never says
+which dir it used, so the script chooses: DIR/<config name>. After an
+expected outcome that dir is deleted; after an unexpected one it is kept
+and its path printed - a checkpoint in it is what TLC's -recover resumes
+from. --java is the JVM binary with its own options as one
 string, "java" by default, for example
     --java "java -XX:+UseParallelGC -Dtlc2.tool.queue.IStateQueue=MemStateQueue"
 Aliases are not visible to a subprocess, so pass the expanded command. The
@@ -38,6 +43,7 @@ import argparse
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -137,8 +143,14 @@ def main():
     parser.add_argument("--workers", default="auto", help="TLC worker count, default auto")
     parser.add_argument("--checkpoint", metavar="MIN",
                         help="TLC -checkpoint: minutes between checkpoints, "
-                        "written under states/ next to the spec; a dead run "
-                        "resumes from one with TLC's -recover states/<id>")
+                        "written to the metadir; a dead run resumes from one "
+                        "with TLC's -recover <metadir>/<id>")
+    parser.add_argument("--metadir", required=True, metavar="DIR",
+                        help="where TLC keeps its run files - the disk state "
+                        "queue, fingerprint spills, checkpoints: DIR/<config "
+                        "name>, passed as TLC's -metadir. Deleted after an "
+                        "expected outcome, kept and printed after an unexpected "
+                        "one")
     parser.add_argument("--interval", type=int, default=60,
                         help="progress report period, seconds")
     parser.add_argument("--witness", action="store_true",
@@ -162,11 +174,14 @@ def main():
         tlc_opts += ["-fpmem", args.fpmem]
     if args.checkpoint is not None:
         tlc_opts += ["-checkpoint", args.checkpoint]
+    metadir = os.path.abspath(args.metadir)
     total_started = time.time()
     for i, cfg in enumerate(cfgs, 1):
         name = os.path.basename(cfg)[:-len(".cfg")]
         out_path = cfg[:-len(".cfg")] + "_out.txt"
+        meta = os.path.join(metadir, name)
         cmd = java + tlc_opts + [
+            "-metadir", meta,
             "-config", os.path.relpath(cfg, cwd),
             os.path.relpath(spec, cwd),
         ]
@@ -176,9 +191,11 @@ def main():
         expected, outcome = verdict(name, passed, text, args.witness)
         print("%s %s in %ds" % (label, outcome, elapsed), flush=True)
         if expected:
+            shutil.rmtree(meta, ignore_errors=True)
             continue
         if not passed:
             print_failure(text, out_path)
+        print("  metadir kept: %s" % meta)
         return 1
     print("ALL AS EXPECTED in %ds" % (time.time() - total_started))
     return 0

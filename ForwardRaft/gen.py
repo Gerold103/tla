@@ -10,7 +10,9 @@ different modules.
 
 Every config checks TotalInvariant. An entry may add one more check:
 `invariant: Name` or `property: Name`, both defined in the module the run
-is given (ForwardRaftWitness.tla for the witnesses).
+is given (ForwardRaftWitness.tla for the witnesses). An optional
+`max_promotes: N` caps the PROMOTEs the cluster writes (MaxPromotes); the
+default 999 never binds.
 
 Node ids are n1..nN: the data nodes first, the voters after them. The limbo
 owner at start is n1. Transactions are single letters a, b, c, ...
@@ -61,6 +63,7 @@ def main(argv):
             voter_ids=tla_set(voters),
             transactions=tla_set(txns),
             max_term=cfg["max_term"],
+            max_promotes=cfg.get("max_promotes", 999),
             quorum=cfg["quorum"],
             checks=checks(cfg),
         )

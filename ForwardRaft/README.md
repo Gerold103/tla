@@ -29,15 +29,19 @@ time. `--fpmem` and `--checkpoint` are forwarded to TLC when given.
 
     python3 tools/run.py --tlc /path/to/tla2tools.jar --java "java -XX:+UseParallelGC" \
         --java-heap 48g --fpmem 0.5 --checkpoint 30 --workers auto --interval 60 \
-        --spec ForwardRaft/ForwardRaft.tla var/test/*.cfg
+        --metadir var/test/states --spec ForwardRaft/ForwardRaft.tla var/test/*.cfg
 
-    python3 tools/run.py --tlc /path/to/tla2tools.jar --witness \
+    python3 tools/run.py --tlc /path/to/tla2tools.jar --witness --metadir var/witness/states \
         --spec ForwardRaft/ForwardRaftWitness.tla var/witness/*.cfg
 
 `--java` is the JVM with its options as one string (aliases are not visible
 to a subprocess); `--java-heap` is its `-Xmx`, `--fpmem` the fingerprint
 set's share of it, `--checkpoint` the minutes between TLC checkpoints - see
-`run.py --help` for what each means and why a big run wants all three. The
+`run.py --help` for what each means and why a big run wants them all.
+`--metadir` is required: TLC keeps its run files (disk queue, fingerprint
+spills, checkpoints) in `<metadir>/<config name>`, deleted after an expected
+outcome and kept, with its path printed, after an unexpected one - that is
+where a checkpoint to `-recover` from lives. The
 test config names carry their position in the matrix, so the shell glob runs
 them in the matrix order; for a subset, list them explicitly.
 
@@ -50,6 +54,13 @@ Success is every config passing.
 
 Naming: `<position>_<majority|bad>_d<data nodes>v<voters>_q<quorum>_t<MaxTerm>`.
 The limbo owner at start is always `n1`; voters are the highest node ids.
+
+An entry may set `max_promotes`, the cap on the PROMOTEs the whole cluster
+writes (`MaxPromotes`). The natural maximum is one per node per electable
+term, `data nodes * (MaxTerm - 1)`; the default 999 never binds. A cap cuts
+the breadth of a big run - not every node promotes in every term - and
+keeps its depth; `08` runs with 6 of its 9. The witnesses are the check that
+the scenarios survive a cap: all ten need at most four PROMOTEs.
 
 Depth: `MaxTerm = 4` allows three promotions, which is what the deepest
 known pattern needs - a chain through a chain, a poisoned entry covered by

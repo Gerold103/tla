@@ -41,6 +41,13 @@ CONSTANT AllTransactions
 \* Maximum term allowed before stopping
 CONSTANT MaxTerm
 
+\* The PROMOTEs the whole cluster may write. The natural maximum is one per
+\* node per electable term, data nodes * (MaxTerm - 1); anything at or above
+\* it never binds. A lower value cuts the breadth of the big runs - not every
+\* node promotes in every term - and keeps the depth. The witnesses are the
+\* check that the scenarios survive it.
+CONSTANT MaxPromotes
+
 \* Initial limbo owner (must be in NodeIDs)
 CONSTANT InitialLimboOwner
 
@@ -103,7 +110,11 @@ VARIABLE Nodes
 \* Remaining transactions to create (set)
 VARIABLE TransactionsToDo
 
-vars == <<Nodes, TransactionsToDo>>
+\* The PROMOTEs written so far, all nodes together. A function of the
+\* journals, so no state of its own - the guard on it is what matters.
+VARIABLE PromotesWritten
+
+vars == <<Nodes, TransactionsToDo, PromotesWritten>>
 
 --------------------------------------------------------------------------------
 \*
@@ -352,6 +363,7 @@ NodeNew(nid) == [
 Init ==
     /\ Nodes = [nid \in NodeIDs |-> NodeNew(nid)]
     /\ TransactionsToDo = AllTransactions
+    /\ PromotesWritten = 0
 
 --------------------------------------------------------------------------------
 \*
@@ -374,7 +386,7 @@ NodeBumpTerm(nid) ==
                 SetRaftState(RaftStateCandidate,
                 SetLimboState(LimboStateReplica,
                 node)))))
-    /\ UNCHANGED TransactionsToDo
+    /\ UNCHANGED <<TransactionsToDo, PromotesWritten>>
 
 \* Node votes for a candidate of its term, once per term. The candidate's
 \* journal must contain everything the voter has. The vote request is a
@@ -398,7 +410,7 @@ NodeVote(voter_nid, cand_nid) ==
     /\ LinkIsOpenFromTo(cand_nid, voter_nid)
     \* ---
     /\ Nodes' = NodesUpdate(voter_nid, SetRaftVote(cand_nid, voter))
-    /\ UNCHANGED TransactionsToDo
+    /\ UNCHANGED <<TransactionsToDo, PromotesWritten>>
 
 \* Node becomes Raft leader after having a quorum of votes: its own one and
 \* the Raft messages coming over the voters' replication links.
@@ -418,7 +430,7 @@ NodeBecomeLeader(nid) ==
                 SetRaftState(RaftStateLeader,
                 SetMadeTxn(FALSE,
                 node)))
-    /\ UNCHANGED TransactionsToDo
+    /\ UNCHANGED <<TransactionsToDo, PromotesWritten>>
 
 \* Node observes a higher term from another node and steps down. The vote is
 \* reset - it is per term. The terms travel both with the entries and with
@@ -445,7 +457,7 @@ NodeObserveHigherTerm(nid) ==
                     SetRaftState(RaftStateFollower,
                     SetLimboState(LimboStateReplica,
                     node)))))
-    /\ UNCHANGED TransactionsToDo
+    /\ UNCHANGED <<TransactionsToDo, PromotesWritten>>
 
 --------------------------------------------------------------------------------
 \*
@@ -564,6 +576,7 @@ LimboApplyPromote(promote, confirm_entry, node) ==
 LimboWritePromote(nid) ==
     LET node == Nodes[nid]
     IN
+    /\ PromotesWritten < MaxPromotes
     /\ node.raft_state = RaftStateLeader
     /\ node.raft_term > node.limbo_term
     \* A pending PROMOTE at or above the own term means the elections have
@@ -614,6 +627,7 @@ LimboWritePromote(nid) ==
                VclockSet(base_term_map, nid, node.raft_term)
            )
        IN Nodes' = NodesUpdate(nid, LimboStorePromote(entry, node))
+    /\ PromotesWritten' = PromotesWritten + 1
     /\ UNCHANGED TransactionsToDo
 
 \* Leader confirms PROMOTE after quorum receives it. The own CONFIRM goes
@@ -646,7 +660,7 @@ LimboConfirmPromote(nid) ==
        IN Nodes' = NodesUpdate(nid,
                    SetLimboState(LimboStateLeader,
                    LimboApplyPromote(promote_entry, confirm_entry, node)))
-    /\ UNCHANGED TransactionsToDo
+    /\ UNCHANGED <<TransactionsToDo, PromotesWritten>>
 
 --------------------------------------------------------------------------------
 \*
@@ -672,6 +686,7 @@ LimboCreateTransaction(nid) ==
            entry == EntryNewTransaction(nid, NextLSN(nid, node), txn_data)
        IN
         /\ TransactionsToDo' = TransactionsToDo \ {txn_data}
+        /\ UNCHANGED PromotesWritten
         /\ Nodes' = NodesUpdate(nid,
                     SetLimbo(entry,
                     SetMadeTxn(TRUE,
@@ -700,7 +715,7 @@ LimboConfirmTransaction(nid) ==
                     SetLimboVclock(VclockSet(node.limbo_vclock, nid, txn_entry.lsn),
                     JournalAppend(confirm_entry,
                     SetTxnCommitted(txn_entry.data, node)))))
-    /\ UNCHANGED TransactionsToDo
+    /\ UNCHANGED <<TransactionsToDo, PromotesWritten>>
 
 --------------------------------------------------------------------------------
 \*
@@ -867,7 +882,7 @@ ReplicateNextEntry(dst_nid) ==
         CASE entry.type = EntryTypePromote -> ReplicatePromote(entry, srcs, dst_nid)
           [] entry.type = EntryTypeConfirm -> ReplicateConfirm(entry, srcs, dst_nid)
           [] entry.type = EntryTypeTransaction -> ReplicateTransaction(entry, dst_nid)
-    /\ UNCHANGED TransactionsToDo
+    /\ UNCHANGED <<TransactionsToDo, PromotesWritten>>
 --------------------------------------------------------------------------------
 \*
 \* Main specification

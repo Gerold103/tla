@@ -13,6 +13,11 @@
 # Voters vote and observe terms but receive no rows, so a quorum above the
 # data node count can never confirm a PROMOTE. Such combinations are left
 # out.
+#
+# max_promotes caps the PROMOTEs the whole cluster writes; the natural
+# maximum is data nodes * (max_term - 1), the default 999 never binds. A cap
+# cuts the breadth of a big run and keeps its depth; the witnesses show
+# which scenarios survive it.
 
 configs:
 
@@ -73,9 +78,10 @@ configs:
     transactions: 2
 
   - name: 08_bad_d3v0_q1_t4
-    note: three sides, all links can break; covers every bad config with voters
+    note: three sides, all links can break; covers every bad config with voters; capped at 6 of the 9 possible PROMOTEs
     data_nodes: 3
     voters: 0
     quorum: 1
     max_term: 4
+    max_promotes: 6
     transactions: 2
