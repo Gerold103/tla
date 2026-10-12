@@ -234,12 +234,14 @@ EntryNewPromote(origin_id, lsn, raft_term, prev_owner, confirm_lsn,
     term_map |-> term_map
 ]
 
-\* Create a new CONFIRM entry
-EntryNewConfirm(origin_id, lsn, owner_id, confirm_lsn) == [
+\* Create a new CONFIRM entry: the origin's own rows up to confirm_lsn are
+\* confirmed. The row at confirm_lsn is a transaction of the origin, or the
+\* origin's own PROMOTE - one CONFIRM meaning for both, and the PROMOTE's
+\* CONFIRM names the exact row it confirms.
+EntryNewConfirm(origin_id, lsn, confirm_lsn) == [
     type |-> EntryTypeConfirm,
     origin_id |-> origin_id,
     lsn |-> lsn,
-    owner_id |-> owner_id,
     confirm_lsn |-> confirm_lsn
 ]
 
@@ -269,9 +271,9 @@ PromotionsSet(nid, promote, promotions) ==
               "No two pending promotions share a term")
     THEN [promotions EXCEPT ![nid] = promote]
     ELSE promotions
-PromotionsFindPending(nid, confirm_lsn, promotions) ==
+PromotionsFindPending(nid, lsn, promotions) ==
     LET promote == promotions[nid]
-    IN IF PromoteIsValid(promote) /\ promote.confirm_lsn = confirm_lsn
+    IN IF PromoteIsValid(promote) /\ promote.lsn = lsn
        THEN promote
        ELSE PromoteEmpty
 
@@ -608,22 +610,29 @@ LimboWritePromote(nid) ==
                           ELSE IF TxnIsValid(node.limbo)
                                THEN node.limbo.lsn
                                ELSE node.limbo_vclock[node.limbo_owner]
-           \* confirmed_vclock: use latest promote's if exists, otherwise limbo vclock
+           \* confirmed_vclock: the chain's as it is - the verdict on the
+           \* previous owner was written by the first PROMOTE of the chain,
+           \* and nothing confirms more for that owner while its succession
+           \* is pending - or the own limbo vclock with the verdict.
            base_vclock == IF has_pending
                           THEN latest_promote.confirmed_vclock
-                          ELSE node.limbo_vclock
+                          ELSE VclockSet(node.limbo_vclock, prev_owner, confirm_lsn)
            \* term_map: accumulate the chain's terms the same way as the
            \* confirmed vclock, folding this promotion's own term in
            base_term_map == IF has_pending
                             THEN latest_promote.term_map
                             ELSE node.limbo_term_map
+           lsn == NextLSN(nid, node)
+           \* The row itself is in its confirmed vclock: its CONFIRM names
+           \* it, and a chain over it carries it on, so a late CONFIRM of a
+           \* covered PROMOTE is recognized as already done.
            entry == EntryNewPromote(
                nid,
-               NextLSN(nid, node),
+               lsn,
                node.raft_term,
                prev_owner,
                confirm_lsn,
-               VclockSet(base_vclock, prev_owner, confirm_lsn),
+               VclockSet(base_vclock, nid, lsn),
                VclockSet(base_term_map, nid, node.raft_term)
            )
        IN Nodes' = NodesUpdate(nid, LimboStorePromote(entry, node))
@@ -654,8 +663,7 @@ LimboConfirmPromote(nid) ==
     /\ LET confirm_entry == EntryNewConfirm(
                nid,
                NextLSN(nid, node),
-               promote_entry.prev_owner,
-               promote_entry.confirm_lsn
+               promote_entry.lsn
            )
        IN Nodes' = NodesUpdate(nid,
                    SetLimboState(LimboStateLeader,
@@ -704,7 +712,6 @@ LimboConfirmTransaction(nid) ==
     /\ LET confirm_entry == EntryNewConfirm(
                nid,
                NextLSN(nid, node),
-               nid,
                txn_entry.lsn
            )
        IN
@@ -774,8 +781,8 @@ ReplicatePromote(entry, srcs, dst_nid) ==
 ReplicateConfirmPromote(entry, srcs, dst_nid, promote) ==
     LET dst_node == Nodes[dst_nid]
     IN
-    /\ Assert(entry.confirm_lsn = promote.confirm_lsn,
-             "CONFIRM lsn must match pending PROMOTE confirm_lsn")
+    /\ Assert(entry.confirm_lsn = promote.lsn,
+             "The CONFIRM names the PROMOTE's own row")
     /\ IF ~PromoteCanBeConfirmed(dst_node, promote)
        THEN LinkCloseFromAnyOfTo(srcs, dst_nid)
        ELSE
@@ -799,33 +806,42 @@ ReplicateConfirmPromote(entry, srcs, dst_nid, promote) ==
                      "A majority quorum never confirms behind the leader's back")
            /\ Nodes' = NodesUpdate(dst_nid, new_node)
 
-\* Apply a CONFIRM entry to destination node
+\* Apply a CONFIRM entry to destination node: the origin's rows up to
+\* confirm_lsn are confirmed. The row named is the origin's pending PROMOTE,
+\* or a row already covered here, or the owner's queued transaction;
+\* anything else is a fork - an old owner still confirming, or a confirmation
+\* of what isn't queued here at all.
 ReplicateConfirm(entry, srcs, dst_nid) ==
     LET dst_node == Nodes[dst_nid]
-        current_lsn == dst_node.limbo_vclock[entry.owner_id]
-        promote == PromotionsFindPending(entry.origin_id, entry.confirm_lsn, dst_node.limbo_promotions)
+        origin == entry.origin_id
+        current_lsn == dst_node.limbo_vclock[origin]
+        pending == dst_node.limbo_promotions[origin]
+        promote == PromotionsFindPending(origin, entry.confirm_lsn, dst_node.limbo_promotions)
         txn_entry == dst_node.limbo
-        \* A CONFIRM of the current owner's queued transaction. Anything else
-        \* confirming something new is a fork: an old owner still confirming,
-        \* or a confirmation of what isn't queued here at all.
         is_txn_confirm ==
-            /\ entry.owner_id = dst_node.limbo_owner
+            /\ origin = dst_node.limbo_owner
             /\ TxnIsValid(txn_entry)
             /\ txn_entry.lsn <= entry.confirm_lsn
     IN
-    IF PromoteIsValid(promote)
-    THEN ReplicateConfirmPromote(entry, srcs, dst_nid, promote)
-    ELSE IF entry.confirm_lsn <= current_lsn
-    THEN Nodes' = NodesUpdate(dst_nid, JournalAppend(entry, dst_node))
-    ELSE IF is_txn_confirm
-    THEN /\ Assert(txn_entry.origin_id = entry.owner_id,
-                   "Transaction origin must match CONFIRM owner")
-         /\ Nodes' = NodesUpdate(dst_nid,
-                      SetLimboVclock(VclockSet(dst_node.limbo_vclock, entry.owner_id, entry.confirm_lsn),
-                      SetLimbo(TxnEmpty,
-                      JournalAppend(entry,
-                      SetTxnCommitted(txn_entry.data, dst_node)))))
-    ELSE LinkCloseFromAnyOfTo(srcs, dst_nid)
+    \* The rows of one origin arrive in order, and a PROMOTE's CONFIRM comes
+    \* before anything written after the PROMOTE. So while the origin has a
+    \* PROMOTE pending here, the only CONFIRM of its that can arrive is that
+    \* PROMOTE's own.
+    /\ Assert(~PromoteIsValid(pending) \/ pending.lsn = entry.confirm_lsn,
+              "A CONFIRM from an origin with a pending PROMOTE is that PROMOTE's")
+    /\ IF PromoteIsValid(promote)
+       THEN ReplicateConfirmPromote(entry, srcs, dst_nid, promote)
+       ELSE IF entry.confirm_lsn <= current_lsn
+       THEN Nodes' = NodesUpdate(dst_nid, JournalAppend(entry, dst_node))
+       ELSE IF is_txn_confirm
+       THEN /\ Assert(txn_entry.origin_id = origin,
+                      "The queued transaction is the owner's")
+            /\ Nodes' = NodesUpdate(dst_nid,
+                         SetLimboVclock(VclockSet(dst_node.limbo_vclock, origin, entry.confirm_lsn),
+                         SetLimbo(TxnEmpty,
+                         JournalAppend(entry,
+                         SetTxnCommitted(txn_entry.data, dst_node)))))
+       ELSE LinkCloseFromAnyOfTo(srcs, dst_nid)
 
 \* Apply a transaction entry to destination node
 ReplicateTransaction(entry, dst_nid) ==

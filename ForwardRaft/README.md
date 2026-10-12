@@ -43,10 +43,12 @@ Rows are of three kinds:
   last confirmed LSN is N". Written by a Raft leader right after the
   election. It carries the owner's confirmed vclock and a **term map**: the
   latest term the author knew for every node when it wrote the row.
-- **CONFIRM** - confirms either a PROMOTE (then it carries the PROMOTE's
-  `confirm_lsn`) or the owner's transaction (then the LSN confirmed). Any
-  decision - a transaction committed, a PROMOTE applied - is made by a
-  CONFIRM row; nothing is decided without one.
+- **CONFIRM** - "my rows up to LSN X are confirmed", written by the node
+  whose rows they are. The row at X is either the author's transaction or
+  the author's own PROMOTE, so a PROMOTE's CONFIRM names the exact row it
+  confirms, with one CONFIRM meaning for both kinds. Any decision - a
+  transaction committed, a PROMOTE applied - is made by a CONFIRM row;
+  nothing is decided without one.
 - **transaction** - written only by the limbo owner, one at a time (the next
   one only after the previous one's CONFIRM), one per leadership here.
 
