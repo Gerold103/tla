@@ -80,8 +80,8 @@ gets through as many configs as it can before the ones taking a day.
 | 02_majority_d2v1_q2_t4   | 2+1   | 2 of 3 | a voter decides elections, data nodes ack alone |
 | 03_majority_d3v0_q2_t3   | 3     | 2 of 3 | smoke test, majority                            |
 | 04_bad_d2v0_q1_t4        | 2     | 1 of 2 | every node elects itself                        |
-| 05_bad_d3v0_q1_t3        | 3     | 1 of 3 | smoke test, two-sided forks                     |
-| 06_majority_d3v0_q2_t4   | 3     | 2 of 3 | the full majority run                           |
+| 05_majority_d3v0_q2_t4   | 3     | 2 of 3 | the full majority run                           |
+| 06_bad_d3v0_q1_t3        | 3     | 1 of 3 | smoke test, two-sided forks                     |
 | 07_majority_d3v2_q3_t4   | 3+2   | 3 of 5 | two voters, every data node must ack            |
 | 08_bad_d3v0_q1_t4        | 3     | 1 of 3 | three sides, all links can break                |
 

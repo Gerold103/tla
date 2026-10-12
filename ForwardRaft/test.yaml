@@ -2,9 +2,10 @@
 # template.cfg. Every config must pass. The order is the run order, by the
 # estimated size, smallest first, so that a run gets through as many configs
 # as it can before the ones taking a day. The names carry the position, so a
-# shell glob over the generated dir lists them in this order. Measured on a
-# laptop with two transactions: d2v0_q2_t4 and d2v1_q2_t4 in seconds,
-# d3v0_q2_t3 10 s, bad d2v0_q1_t4 41 s (2.6M states); the rest is estimated.
+# shell glob over the generated dir lists them in this order. Measured on the
+# 16-core server, 2026-10-09: 01 3 s, 02 7 s, 03 9 s, 04 26 s, 05 838 s,
+# 06 1649 s, 07 hours (deadlocked at depth 55 after 13 h, see the review
+# doc), 08 days; 07 and 08 are estimates from the aborted runs.
 #
 # Depth: max_term 4 allows three promotions, which is what the deepest known
 # pattern needs - a chain through a chain, a poisoned entry covered by a
@@ -53,20 +54,20 @@ configs:
     max_term: 4
     transactions: 2
 
-  - name: 05_bad_d3v0_q1_t3
-    note: smoke test, two-sided forks
-    data_nodes: 3
-    voters: 0
-    quorum: 1
-    max_term: 3
-    transactions: 2
-
-  - name: 06_majority_d3v0_q2_t4
+  - name: 05_majority_d3v0_q2_t4
     note: the full majority run
     data_nodes: 3
     voters: 0
     quorum: 2
     max_term: 4
+    transactions: 2
+
+  - name: 06_bad_d3v0_q1_t3
+    note: smoke test, two-sided forks
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 3
     transactions: 2
 
   - name: 07_majority_d3v2_q3_t4
