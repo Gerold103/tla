@@ -4,22 +4,38 @@
 Usage:
     run.py --tlc tla2tools.jar --spec SPEC.tla --metadir DIR
            [--java "<java and its options>"] [--java-heap SIZE] [--fpmem X]
-           [--workers N|auto] [--checkpoint N] [--interval N] [--witness] CFG...
+           [--workers N|auto] [--checkpoint N] [--interval N] [--witness]
+           [--simulate [--depth D] [--traces N]] CFG...
+
+A config is checked exhaustively, or by TLC's random simulation: random
+behaviors from the initial state, each up to a depth (TLC's default 100),
+the invariants and properties checked along the way, nothing remembered
+between behaviors. A violation found this way is as real as in the
+exhaustive run and comes with its trace; a clean end proves nothing, and is
+reported as such. Deep scenarios the exhaustive search can't reach are
+found this way, if they have many paths. A config is simulated when its
+header carries the runner's options, a comment line gen.py writes from the
+matrix:
+    \\* run: {"simulate": {"traces": N, "depth": D}}
+N behaviors in total, depth optional. Without the line, or without
+"simulate" in it, the config is exhaustive. --simulate overrides: every
+config is simulated, with --traces N in total (none: until a violation or
+a kill) and --depth D.
 
 The command run for each config is
-    <java> [-Xmx<heap>] -cp <jar> tlc2.TLC -workers W -noGenerateSpecTE
-           [-fpmem X] [-checkpoint N] -metadir DIR/<config name>
-           -config <cfg> <spec>
+    <java> [-Xmx<heap>] -cp <jar> tlc2.TLC -workers W [-noGenerateSpecTE]
+           [-fpmem X] [-checkpoint N] [-simulate [num=N] [-depth D]]
+           -metadir DIR/<config name> -config <cfg> <spec>
 in the spec's directory. -noGenerateSpecTE is passed when the jar knows it
 (TLC 2.20 writes a trace exploration spec next to the module on a failure
 unless told not to; 2.19 writes it only on request and rejects the flag): the
-spec is never used, the trace is in the _out.txt. The metadir is where TLC keeps its run files - the
-disk state queue, the fingerprint spills, the checkpoints. TLC never says
-which dir it used, so the script chooses: DIR/<config name>. After an
-expected outcome that dir is deleted; after an unexpected one it is kept
-and its path printed - a checkpoint in it is what TLC's -recover resumes
-from. --java is the JVM binary with its own options as one
-string, "java" by default, for example
+spec is never used, the trace is in the _out.txt. The metadir is where TLC
+keeps its run files - the disk state queue, the fingerprint spills, the
+checkpoints. TLC never says which dir it used, so the script chooses:
+DIR/<config name>. After an expected outcome that dir is deleted; after an
+unexpected one it is kept and its path printed - a checkpoint in it is what
+TLC's -recover resumes from. --java is the JVM binary with its own options
+as one string, "java" by default, for example
     --java "java -XX:+UseParallelGC -Dtlc2.tool.queue.IStateQueue=MemStateQueue"
 Aliases are not visible to a subprocess, so pass the expanded command. The
 JVM options must precede the jar, TLC's own options follow it; the script
@@ -44,6 +60,7 @@ itself reports the state counts and the depth at the end. Every N seconds
 config's name and position when it differs from the last printed one.
 """
 import argparse
+import json
 import os
 import re
 import shlex
@@ -53,6 +70,8 @@ import sys
 import time
 
 PASS_MARK = "Model checking completed. No error has been found."
+ERROR_RE = re.compile(r"^Error:", re.MULTILINE)
+RUN_LINE_PREFIX = "\\* run: "
 VIOLATION_RE = re.compile(r"^Error: (?:Invariant|Action property) (\S+) is violated\.",
                           re.MULTILINE)
 
@@ -64,12 +83,46 @@ def last_progress(path):
     except OSError:
         return ""
     for line in reversed(lines):
-        if line.startswith("Progress(") or line.startswith("Computing initial states"):
+        # "Progress(depth) ..." in the exhaustive search, "Progress: ..." in a
+        # simulation.
+        if line.startswith("Progress") or line.startswith("Computing initial states"):
             return line.strip()
     return lines[-1].strip() if lines else ""
 
 
-def run_one(cmd, cwd, out_path, interval, label):
+def run_options(cfg_path):
+    """run.py's options for the config: the JSON of its `\\* run:` header
+    line, written by gen.py; {} without the line."""
+    with open(cfg_path) as f:
+        for line in f:
+            if not line.startswith(RUN_LINE_PREFIX):
+                continue
+            opts = json.loads(line[len(RUN_LINE_PREFIX):])
+            unknown = set(opts) - {"simulate"}
+            if unknown:
+                sys.exit("%s: unknown run options %s" % (cfg_path, sorted(unknown)))
+            sim = opts.get("simulate")
+            if sim is not None and \
+                    ("traces" not in sim or set(sim) - {"traces", "depth"}):
+                sys.exit("%s: run simulate takes traces (required) and depth"
+                         % cfg_path)
+            return opts
+    return {}
+
+
+def simulate_opts(sim, workers):
+    """TLC's options for a simulation: sim["traces"] behaviors in total (none:
+    unbounded), each up to sim["depth"] steps (none: TLC's default)."""
+    opts = ["-simulate"]
+    if sim.get("traces") is not None:
+        # TLC's num is per worker.
+        opts.append("num=%d" % -(-sim["traces"] // workers))
+    if sim.get("depth") is not None:
+        opts += ["-depth", str(sim["depth"])]
+    return opts
+
+
+def run_one(cmd, cwd, out_path, interval, label, simulate):
     started = time.time()
     reported = None
     with open(out_path, "w") as out:
@@ -88,7 +141,10 @@ def run_one(cmd, cwd, out_path, interval, label):
     elapsed = time.time() - started
     with open(out_path) as f:
         text = f.read()
-    passed = proc.returncode == 0 and PASS_MARK in text
+    # A simulation has no completion mark; it passed when TLC ended by itself
+    # without an error.
+    passed = proc.returncode == 0 and \
+        (PASS_MARK in text or (simulate and not ERROR_RE.search(text)))
     with open(out_path, "a") as out:
         out.write("\n=== run.py: %s\n=== run.py: %s in %d seconds, exit code %d\n"
                   % (" ".join(cmd), "PASS" if passed else "FAIL", elapsed,
@@ -107,10 +163,14 @@ def print_failure(text, out_path):
         subprocess.run([sys.executable, tool, out_path, "actions"])
 
 
-def verdict(name, passed, text, witness):
+def verdict(name, passed, text, witness, simulate):
     """The outcome against the expectation: (is_expected, description)."""
     if not witness:
+        if passed and simulate:
+            return True, "PASS, the simulation found nothing"
         return passed, "PASS" if passed else "FAIL"
+    if passed and simulate:
+        return False, "NOT FOUND, the simulation never violated %s" % name
     if passed:
         return False, "NOT REACHED, the model never violates %s" % name
     violated = VIOLATION_RE.findall(text)
@@ -144,7 +204,8 @@ def main():
                         "of the heap, or MB if above 1. TLC's default is 0.25. "
                         "The rest of the heap is for the workers and the queue; "
                         "0.5 of a 48g heap holds 3e9 states and leaves 24g")
-    parser.add_argument("--workers", default="auto", help="TLC worker count, default auto")
+    parser.add_argument("--workers", default="1",
+                        help="TLC worker count, default 1; 'auto' is the core count")
     parser.add_argument("--checkpoint", metavar="MIN",
                         help="TLC -checkpoint: minutes between checkpoints, "
                         "written to the metadir; a dead run resumes from one "
@@ -160,8 +221,24 @@ def main():
     parser.add_argument("--witness", action="store_true",
                         help="the configs are reachability witnesses: each must "
                         "violate the invariant or property of its name")
+    parser.add_argument("--simulate", action="store_true",
+                        help="TLC -simulate on every config, whatever its "
+                        "'run:' header line says: random behaviors instead "
+                        "of the exhaustive search, until a violation or until "
+                        "killed; a clean end proves nothing and is reported "
+                        "as such")
+    parser.add_argument("--depth", metavar="D", type=int,
+                        help="with --simulate, TLC -depth: the length of a "
+                        "simulated behavior, TLC's default 100")
+    parser.add_argument("--traces", metavar="N", type=int,
+                        help="with --simulate, stop after N behaviors in total "
+                        "(TLC counts per worker; N is divided by the worker "
+                        "count, rounded up)")
     parser.add_argument("cfgs", nargs="+", help="the .cfg files to run, in order")
     args = parser.parse_args()
+    if not args.simulate and (args.traces is not None or args.depth is not None):
+        parser.error("--traces and --depth need --simulate; a config's own "
+                     "simulation is set in the matrix")
 
     spec = os.path.abspath(args.spec)
     cwd = os.path.dirname(spec)
@@ -185,21 +262,35 @@ def main():
         tlc_opts += ["-fpmem", args.fpmem]
     if args.checkpoint is not None:
         tlc_opts += ["-checkpoint", args.checkpoint]
+    # "auto" is the core count, as in TLC.
+    workers = os.cpu_count() if args.workers == "auto" else int(args.workers)
     metadir = os.path.abspath(args.metadir)
     total_started = time.time()
     for i, cfg in enumerate(cfgs, 1):
         name = os.path.basename(cfg)[:-len(".cfg")]
         out_path = cfg[:-len(".cfg")] + "_out.txt"
         meta = os.path.join(metadir, name)
-        cmd = java + tlc_opts + [
+        if args.simulate:
+            sim = {"traces": args.traces, "depth": args.depth}
+        else:
+            sim = run_options(cfg).get("simulate")
+        cmd = java + tlc_opts
+        if sim is not None:
+            cmd = cmd + simulate_opts(sim, workers)
+        cmd = cmd + [
             "-metadir", meta,
             "-config", os.path.relpath(cfg, cwd),
             os.path.relpath(spec, cwd),
         ]
         label = "[%d/%d] %s" % (i, len(cfgs), name)
-        print("%s START" % label, flush=True)
-        passed, elapsed, text = run_one(cmd, cwd, out_path, args.interval, label)
-        expected, outcome = verdict(name, passed, text, args.witness)
+        mode = ""
+        if sim is not None:
+            mode = ", simulation of %s traces" % \
+                ("unbounded" if sim.get("traces") is None else sim["traces"])
+        print("%s START%s" % (label, mode), flush=True)
+        passed, elapsed, text = run_one(cmd, cwd, out_path, args.interval, label,
+                                        sim is not None)
+        expected, outcome = verdict(name, passed, text, args.witness, sim is not None)
         print("%s %s in %ds" % (label, outcome, elapsed), flush=True)
         if expected:
             shutil.rmtree(meta, ignore_errors=True)

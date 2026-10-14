@@ -1,13 +1,25 @@
 # The ForwardRaft test matrix. gen.py turns each entry into <name>.cfg from
 # template.cfg. Every config must pass. The order is the run order, by the
 # estimated size, smallest first, so that a run gets through as many configs
-# as it can before the ones taking a day. The names carry the position, so a
-# shell glob over the generated dir lists them in this order. Measured on the
-# 16-core server, 2026-10-09: 01 3 s, 02 7 s, 03 9 s, 04 26 s, 05 838 s,
-# 06 1649 s, 07 hours (deadlocked at depth 55 after 13 h, see the review
-# doc). 08 with two txns and 6 of 9 PROMOTEs passed 3.4B states in two days
-# at depth 29 of ~50 and was abandoned; it is now one txn and 4 PROMOTEs,
-# its size still to be measured.
+# as it can before the big ones. The names carry the position, so a shell
+# glob over the generated dir lists them in this order.
+#
+# 01-08 are exhaustive. Measured on the 16-core server, 2026-10-09: 01 3 s,
+# 02 7 s, 03 9 s, 04 26 s, 05 838 s, 06 1649 s; 07 completes (its one
+# deadlock was a starved JVM, see the review doc). 08 with two txns and 6 of
+# 9 PROMOTEs passed 3.4B states in two days at depth 29 of ~50 and was
+# abandoned; it is now one txn and 4 PROMOTEs, its size still to be measured.
+#
+# 09 and 10 are simulated: `simulate: traces: N` makes run.py run TLC's
+# random simulation on the config - N behaviors of up to `depth` steps -
+# instead of the exhaustive search, which is out of reach for them. A
+# violation found by a simulation is real; a pass proves nothing, the traces
+# count only bounds the run. Measured locally with one worker, 2026-10-15,
+# depth 100: 500-800 traces/s on three nodes, 270/s on five; the mean trace
+# is 30-40 steps, the depth rarely binds. The counts below, a billion each,
+# are weeks on one worker at that rate and days on 16; they are to be timed
+# on the server and raised if it keeps up. For scale: the third poison
+# (README section 4) took hours of 16-worker simulation on 08's shape to find.
 #
 # Depth: max_term 4 allows three promotions, which is what the deepest known
 # pattern needs - a chain through a chain, a poisoned entry covered by a
@@ -91,3 +103,27 @@ configs:
     max_term: 4
     max_promotes: 4
     transactions: 1
+
+  - name: 09_bad_d3v0_q1_t7
+    note: >-
+      room for a chain six PROMOTEs long - every node promoted twice, the
+      chain squashed into three slots - with two txns to reorder
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 7
+    transactions: 2
+    simulate:
+      traces: 1000000000
+      depth: 100
+
+  - name: 10_majority_d5v0_q3_t4
+    note: five data nodes, a majority of three, two disjoint minorities
+    data_nodes: 5
+    voters: 0
+    quorum: 3
+    max_term: 4
+    transactions: 2
+    simulate:
+      traces: 1000000000
+      depth: 100

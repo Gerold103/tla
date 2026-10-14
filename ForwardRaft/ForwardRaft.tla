@@ -1,28 +1,4 @@
 ----------------------------- MODULE ForwardRaft -------------------------------
-\*
-\* TLA+ Specification for Tarantool Raft Protocol with Limbo
-\*
-\* This specification models a modified Raft consensus protocol used in
-\* Tarantool DBMS. The key difference from vanilla Raft is the separation of
-\* leader election (Raft) and transaction processing (Limbo).
-\*
-\* Main features:
-\* - Vanilla Raft elections with terms and votes
-\* - Limbo module for transaction processing with PROMOTE and CONFIRM entries
-\* - Vector clock (vclock) for tracking confirmed transactions per node
-\* - PROMOTE entry requirement: new leader must get quorum on PROMOTE before
-\*   committing old-term transactions (fixing split-brain issue)
-\* - Split-brain detection: a node refuses an entry contradicting its state
-\*   and stops the replication link it came from. With a majority quorum no
-\*   link ever breaks. With a smaller one the forks are inevitable; what is
-\*   checked then is that any two nodes holding the same rows have the same
-\*   state, and that a node accepting another's rows covers its decisions.
-\*   The detection is not always two-sided, see JournalDeterminesStateInvariant.
-\*
-\* Out of scope: several queued transactions per owner (one at a time here,
-\* the all-or-nothing case), ROLLBACK rows (a timeout rollback by the owner),
-\* DEMOTE rows.
-\*
 
 EXTENDS TLC, Integers, Sequences, FiniteSets
 

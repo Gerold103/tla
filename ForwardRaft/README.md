@@ -1,12 +1,14 @@
-# Synchronous replication with a quorum PROMOTE
+# Forward Raft
 
-This document describes the protocol by which a Tarantool replica set with
-synchronous replication changes its leader, confirms its transactions, and
-detects a split brain. It is the protocol of the "synchronous promote"
-redesign (Tarantool issue gh-8095). The TLA+ model in this directory exists
-to check that the protocol, as described here, has the properties it claims;
-the model is covered at the end. The description needs neither the model nor
-the code.
+Forward Raft is a modification of the Raft consensus protocol.
+
+Its key differences are:
+- Separation of leader election and synchronous replication into 2 different
+  sub-systems.
+- Guaranteed split-brain detection in low-quorum cases.
+- Compatible with append-only Write Ahead Logs.
+
+It is used in Tarantool DBMS.
 
 ## 1. Setting
 
@@ -324,13 +326,16 @@ python3 tools/run.py --tlc /path/to/tla2tools.jar --java "java -XX:+UseParallelG
 `test.yaml` entries have `data_nodes`, `voters`, `quorum`, `max_term`,
 `transactions`, optionally `max_promotes` (a cap on the PROMOTEs the whole
 cluster writes; the natural maximum is `data nodes * (max_term - 1)`, the
-default 999 never binds), `invariant` or `property` (an extra check). The
-names carry their position, so a shell glob runs them in matrix order -
-ascending by measured duration: 01-04 take seconds, 05 and 06 about 15 and
-30 minutes on 16 cores, 07 hours; 08 with two transactions and six PROMOTEs
-passed 3.4 billion states in two days at depth 29 of about 50 and was
-abandoned, it now runs with one transaction and four PROMOTEs, size unknown.
-**Do not start 05-08 casually.**
+default 999 never binds), `invariant` or `property` (an extra check), and
+`simulate` with `traces: N` and `depth: D` (the config is run by TLC's
+random simulation, below, instead of the exhaustive search). The names
+carry their position, so a shell glob runs them in matrix order - ascending
+by measured duration: 01-04 take seconds, 05 and 06 about 15 and 30 minutes
+on 16 cores, 07 hours; 08 with two transactions and six PROMOTEs passed 3.4
+billion states in two days at depth 29 of about 50 and was abandoned, it now
+runs with one transaction and four PROMOTEs, size unknown; 09 and 10 are
+simulated, a billion traces each - days on 16 cores at the measured rate,
+to be timed on the server. **Do not start 05-10 casually.**
 The witnesses take 20 seconds together and are the first thing to run after
 any change to the spec. `run.py --help` explains every flag; the heap and
 fingerprint flags matter on the big runs (a starved JVM deadlocks TLC
@@ -338,6 +343,19 @@ silently), `--metadir` is required and is cleaned after an expected outcome,
 kept after a failure with the checkpoint to `-recover` from. Each run's full
 TLC output lands next to its config as `<name>_out.txt`;
 `tools/tlatrace.py <out.txt> actions|diff|show N` reads a trace.
+
+A `simulate` entry replaces the exhaustive search with TLC's random
+simulation: N behaviors of up to D steps from the initial state, checked
+along the way, nothing remembered between them, until a violation or the
+N-th behavior. A violation found this way is real and comes with its trace;
+a clean end proves nothing, N only bounds the run. gen.py writes the choice
+into the config's header as `\* run: {"simulate": {...}}` and run.py reads
+it there, so one invocation runs the mixed matrix. The command line
+`--simulate [--depth D] [--traces N]` forces simulation on every config
+given, for ad-hoc runs; without `--traces` it runs until a violation or a
+kill. Hours of such a run on 08's shape found the third poison (section 4),
+which no exhaustive config of a feasible size reaches; it then reproduced
+on `04`.
 
 For a change to the model, compare "distinct states found" and "states
 generated" before and after on 01-04 or on a custom small config: a

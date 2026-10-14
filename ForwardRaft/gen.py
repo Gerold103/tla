@@ -14,9 +14,21 @@ is given (ForwardRaftWitness.tla for the witnesses). An optional
 `max_promotes: N` caps the PROMOTEs the cluster writes (MaxPromotes); the
 default 999 never binds.
 
+An entry is checked exhaustively unless it has
+    simulate:
+      traces: N
+      depth: D
+which makes run.py run TLC's random simulation on it instead: N behaviors
+of up to D steps (D is optional, TLC's default is 100). `traces` is
+required - it is what bounds the run. The generated config carries run.py's
+options for it in a header comment, written only when there are any:
+    \\* run: {"simulate": {"traces": N, "depth": D}}
+run.py reads the JSON after `run:`, so one run goes through a mixed matrix.
+
 Node ids are n1..nN: the data nodes first, the voters after them. The limbo
 owner at start is n1. Transactions are single letters a, b, c, ...
 """
+import json
 import os
 import string
 import sys
@@ -36,6 +48,23 @@ def checks(cfg):
     if "property" in cfg:
         lines += ["", "PROPERTIES", "    " + cfg["property"]]
     return "\n".join(lines)
+
+
+def run_line(cfg):
+    """The `\\* run: <json>` header line with run.py's options for this
+    config, empty when there are none."""
+    opts = {}
+    if "simulate" in cfg:
+        sim = cfg["simulate"]
+        if not isinstance(sim, dict) or "traces" not in sim or \
+                not set(sim) <= {"traces", "depth"} or \
+                not all(isinstance(v, int) for v in sim.values()):
+            sys.exit("%s: simulate takes traces (required) and depth, integers"
+                     % cfg["name"])
+        opts["simulate"] = sim
+    if not opts:
+        return ""
+    return "\\* run: %s\n" % json.dumps(opts)
 
 
 def main(argv):
@@ -59,6 +88,7 @@ def main(argv):
         text = template.format(
             matrix=matrix_name,
             note=cfg.get("note", ""),
+            run_line=run_line(cfg),
             node_ids=tla_set(nodes),
             voter_ids=tla_set(voters),
             transactions=tla_set(txns),
