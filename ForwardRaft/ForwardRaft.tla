@@ -468,7 +468,8 @@ NodeObserveHigherTerm(nid) ==
 
 \* A pending PROMOTE is poisoned when no CONFIRM can apply it on this node:
 \* the limbo moved past its term without it, or an applied PROMOTE carries a
-\* term of some node which the entry's author didn't know. It appears in any
+\* term of some node which the entry's author didn't know, or it confirms
+\* less than this node has confirmed already. It appears in any
 \* cluster, when a leader loses the leadership before its PROMOTE reaches
 \* anybody. With a majority quorum it never gets confirmed - a confirmed
 \* PROMOTE is known to every later leader. With a smaller quorum it can, by a
@@ -477,14 +478,19 @@ NodeObserveHigherTerm(nid) ==
 PromoteIsPoisoned(node, promote) ==
     \/ promote.raft_term <= node.limbo_term
     \/ ~VclockGE(promote.term_map, node.limbo_term_map)
+    \* Confirms less than what is confirmed here already - another fork
+    \* signature, and permanent like the others: the confirmed vclock only
+    \* grows. It has to be poison and not only a CONFIRM-time refusal: a
+    \* chain over such a PROMOTE adopts a forked leadership into its term map
+    \* and, writing its own row into the inherited vclock, hides the very
+    \* component which showed the fork. Found by simulation on 04.
+    \/ ~VclockGE(promote.confirmed_vclock, node.limbo_vclock)
 
-\* The filter of a CONFIRM applying a pending PROMOTE, own or received. A
-\* poisoned one is a fork. So is one confirming less than what is already
-\* confirmed here. With a majority quorum a pending PROMOTE of the leader
-\* always passes - nothing gets confirmed behind the leader's back.
+\* The filter of a CONFIRM applying a pending PROMOTE, own or received: a
+\* poisoned one is a fork. With a majority quorum a pending PROMOTE of the
+\* leader always passes - nothing gets confirmed behind the leader's back.
 PromoteCanBeConfirmed(node, promote) ==
-    /\ ~PromoteIsPoisoned(node, promote)
-    /\ VclockGE(promote.confirmed_vclock, node.limbo_vclock)
+    ~PromoteIsPoisoned(node, promote)
 
 \* The filter of a PROMOTE entering the journal, own or received. A term
 \* hosts at most one PROMOTE - one re-using a term the node knows as taken by
