@@ -140,4 +140,52 @@ WitnessQuiescentSplit ==
               a # b /\ (a \in G <=> b \in G) =>
                   a \in Nodes[b].appliers /\ b \in Nodes[a].appliers)
 
+\* The three-promotion patterns, what a fourth term is for.
+
+\* A chain through a chain, confirmed: the CONFIRM advances the applied term
+\* map in three components at once - the last link brought two terms the node
+\* never applied, on top of its own.
+WitnessChainOfThree ==
+    [][~\E nid \in DataNodes:
+          Cardinality({o \in NodeIDs:
+              Nodes'[nid].limbo_term_map[o] > Nodes[nid].limbo_term_map[o]})
+          >= 3]_vars
+
+\* A chain revisits its origin: a leader chains its new PROMOTE over another
+\* node's pending one, which is itself above the leader's own, still live,
+\* pending from an earlier term - the own slot is squashed to the new one.
+WitnessChainSquashesOwnPending ==
+    [][~\E nid \in DataNodes:
+          LET node == Nodes[nid]
+              own == node.limbo_promotions[nid]
+          IN
+          /\ LimboWritePromote(nid)
+          /\ PromoteIsValid(own)
+          /\ ~PromoteIsPoisoned(node, own)
+          /\ \E other \in NodeIDs:
+              LET pending == node.limbo_promotions[other]
+              IN
+              /\ other # nid
+              /\ PromoteIsValid(pending)
+              /\ ~PromoteIsPoisoned(node, pending)
+              /\ pending.raft_term > own.raft_term]_vars
+
+\* A poisoned pending PROMOTE replaced in its slot by its origin's later one:
+\* the origin lost the term, saw the newer leadership, and promoted again.
+WitnessPoisonedReplacedByOrigin ==
+    [][~\E nid \in DataNodes, origin \in NodeIDs:
+          LET old == Nodes[nid].limbo_promotions[origin]
+              new == Nodes'[nid].limbo_promotions[origin]
+          IN
+          /\ PromoteIsValid(old)
+          /\ PromoteIsPoisoned(Nodes[nid], old)
+          /\ PromoteIsValid(new)
+          /\ new.raft_term > old.raft_term]_vars
+
+\* Three fork sides: every data node owns the limbo on itself, each having
+\* confirmed its own PROMOTE alone and applied no one else's.
+WitnessThreeOwners ==
+    ~\A nid \in DataNodes:
+        Nodes[nid].limbo_owner = nid /\ Nodes[nid].limbo_term > 1
+
 ================================================================================

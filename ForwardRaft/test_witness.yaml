@@ -69,7 +69,9 @@ configs:
     transactions: 2
 
   - name: WitnessConfirmOnDelayedAck
-    note: a CONFIRM whose quorum holds only with an ack from a node that moved to a higher term since
+    note: >-
+      a CONFIRM whose quorum holds only with an ack from a node that moved
+      to a higher term since
     property: WitnessConfirmOnDelayedAck
     data_nodes: 3
     voters: 0
@@ -96,10 +98,58 @@ configs:
     transactions: 2
 
   - name: WitnessAllLinksBroken
-    note: every data node refuses every other one - three leaders of one term refuse each other's PROMOTE on arrival
+    note: >-
+      every data node refuses every other one - three leaders of one term
+      refuse each other's PROMOTE on arrival
     invariant: WitnessAllLinksBroken
     data_nodes: 3
     voters: 0
     quorum: 1
     max_term: 2
     transactions: 2
+
+# The three-promotion patterns - what the fourth term is for. They run with
+# the PROMOTE cap 08 runs with, so they double as the check that the cap
+# keeps them reachable.
+
+  - name: WitnessChainOfThree
+    note: a chain through a chain confirmed - three terms applied at once
+    property: WitnessChainOfThree
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 4
+    max_promotes: 4
+    transactions: 1
+
+  - name: WitnessChainSquashesOwnPending
+    note: >-
+      a chain revisits its origin - a leader chains over another's pending
+      above its own still live one, squashing its own slot
+    property: WitnessChainSquashesOwnPending
+    data_nodes: 2
+    voters: 0
+    quorum: 1
+    max_term: 4
+    max_promotes: 4
+    transactions: 1
+
+  - name: WitnessPoisonedReplacedByOrigin
+    note: a poisoned pending PROMOTE replaced in its slot by its origin's later one
+    property: WitnessPoisonedReplacedByOrigin
+    data_nodes: 2
+    voters: 0
+    quorum: 1
+    max_term: 4
+    max_promotes: 4
+    transactions: 1
+
+  - name: WitnessThreeOwners
+    note: three fork sides - every data node owns the limbo on itself
+    invariant: WitnessThreeOwners
+    data_nodes: 3
+    voters: 0
+    quorum: 1
+    max_term: 4
+    max_promotes: 4
+    transactions: 1

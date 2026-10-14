@@ -7,9 +7,12 @@ Usage:
            [--workers N|auto] [--checkpoint N] [--interval N] [--witness] CFG...
 
 The command run for each config is
-    <java> [-Xmx<heap>] -cp <jar> tlc2.TLC -workers W [-fpmem X] [-checkpoint N]
-           -metadir DIR/<config name> -config <cfg> <spec>
-in the spec's directory. The metadir is where TLC keeps its run files - the
+    <java> [-Xmx<heap>] -cp <jar> tlc2.TLC -workers W -noGenerateSpecTE
+           [-fpmem X] [-checkpoint N] -metadir DIR/<config name>
+           -config <cfg> <spec>
+in the spec's directory. -noGenerateSpecTE is always passed: the trace
+exploration spec TLC would write next to the module on a failure is never
+used, the trace is in the _out.txt. The metadir is where TLC keeps its run files - the
 disk state queue, the fingerprint spills, the checkpoints. TLC never says
 which dir it used, so the script chooses: DIR/<config name>. After an
 expected outcome that dir is deleted; after an unexpected one it is kept
@@ -169,7 +172,9 @@ def main():
     if args.java_heap is not None:
         java.append("-Xmx" + args.java_heap)
     java += ["-cp", os.path.abspath(args.tlc), "tlc2.TLC"]
-    tlc_opts = ["-workers", args.workers]
+    # The trace exploration spec TLC writes next to the module on a failure
+    # is never used: the _out.txt holds the trace, tlatrace.py reads it.
+    tlc_opts = ["-workers", args.workers, "-noGenerateSpecTE"]
     if args.fpmem is not None:
         tlc_opts += ["-fpmem", args.fpmem]
     if args.checkpoint is not None:

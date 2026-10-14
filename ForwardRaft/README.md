@@ -295,9 +295,14 @@ ahead of its term, a transaction committed here and rolled back there, the
 CONFIRM of a poisoned PROMOTE refused, a chain confirmed, an own PROMOTE
 confirmed with a newer one pending, a CONFIRM carried by a delayed
 acknowledgement, a limbo leader with a newer PROMOTE pending, the cluster
-split into two consistent groups, every link broken. TLC violating a
-witness is the goal; its trace is the scenario. A witness that passes means
-the model is too strict - a change broke a behavior the protocol has.
+split into two consistent groups, every link broken; and the
+three-promotion patterns a fourth term is for - a chain through a chain, a
+chain revisiting its origin and squashing the origin's own pending slot, a
+poisoned PROMOTE replaced by its origin's later one, three fork sides - run
+with the PROMOTE cap the big config runs with, so they double as the proof
+that the cap keeps them reachable. TLC violating a witness is the goal; its
+trace is the scenario. A witness that passes means the model is too strict -
+a change broke a behavior the protocol has.
 
 ## 10. Running the checks
 
@@ -322,7 +327,10 @@ cluster writes; the natural maximum is `data nodes * (max_term - 1)`, the
 default 999 never binds), `invariant` or `property` (an extra check). The
 names carry their position, so a shell glob runs them in matrix order -
 ascending by measured duration: 01-04 take seconds, 05 and 06 about 15 and
-30 minutes on 16 cores, 07 hours, 08 days. **Do not start 05-08 casually.**
+30 minutes on 16 cores, 07 hours; 08 with two transactions and six PROMOTEs
+passed 3.4 billion states in two days at depth 29 of about 50 and was
+abandoned, it now runs with one transaction and four PROMOTEs, size unknown.
+**Do not start 05-08 casually.**
 The witnesses take 20 seconds together and are the first thing to run after
 any change to the spec. `run.py --help` explains every flag; the heap and
 fingerprint flags matter on the big runs (a starved JVM deadlocks TLC
