@@ -1,5 +1,6 @@
-# The ForwardRaft witness matrix. Each entry adds one invariant or property
-# from ForwardRaftWitness.tla - the negation of a scenario the model must be
+# The VRaft witness matrix. Each entry adds one invariant or property
+# from VRaftWitness.tla, the module `spec` names relative to the VRaft dir:
+# the negation of a scenario the model must be
 # able to reach. The run (tools/run.py --witness) succeeds when every config
 # ends with exactly that invariant or property violated: the violation trace
 # is the proof the state space covers the scenario, and a script for a test.
@@ -11,6 +12,8 @@
 # fork artifact: the delayed ack (the own ack is never stale, so it needs a
 # quorum of two) and the leader with a newer pending PROMOTE. The cheap ones
 # go first.
+
+spec: test/VRaftWitness.tla
 
 configs:
 

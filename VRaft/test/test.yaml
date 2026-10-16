@@ -1,5 +1,6 @@
-# The ForwardRaft test matrix. gen.py turns each entry into <name>.cfg from
-# template.cfg. Every config must pass. The order is the run order, by the
+# The VRaft test matrix. gen.py turns each entry into <name>.cfg from
+# template.cfg, checking the module `spec` names, relative to the VRaft dir.
+# Every config must pass. The order is the run order, by the
 # estimated size, smallest first, so that a run gets through as many configs
 # as it can before the big ones. The names carry the position, so a shell
 # glob over the generated dir lists them in this order.
@@ -8,7 +9,7 @@
 # 02 7 s, 03 9 s, 04 26 s, 05 838 s, 06 1649 s; 07 completes (its one
 # deadlock was a starved JVM, see the review doc). 08 with two txns and 6 of
 # 9 PROMOTEs passed 3.4B states in two days at depth 29 of ~50 and was
-# abandoned; it is now one txn and 4 PROMOTEs, its size still to be measured.
+# abandoned; with one txn and 4 PROMOTEs it passed in 22 h (2026-10-16).
 #
 # 09 and 10 are simulated: `simulate: traces: N` makes run.py run TLC's
 # random simulation on the config - N behaviors of up to `depth` steps -
@@ -33,6 +34,8 @@
 # maximum is data nodes * (max_term - 1), the default 999 never binds. A cap
 # cuts the breadth of a big run and keeps its depth; the witnesses show
 # which scenarios survive it.
+
+spec: VRaft.tla
 
 configs:
 
@@ -69,11 +72,20 @@ configs:
     transactions: 2
 
   - name: 05_majority_d3v0_q2_t4
-    note: the full majority run
+    note: the full majority run until term 4
     data_nodes: 3
     voters: 0
     quorum: 2
     max_term: 4
+    transactions: 2
+
+  - name: 05_01_majority_d3v0_q2_t5
+    note: the full majority run until term 5
+    data_nodes: 3
+    voters: 0
+    quorum: 2
+    max_term: 5
+    max_promotes: 4
     transactions: 2
 
   - name: 06_bad_d3v0_q1_t3

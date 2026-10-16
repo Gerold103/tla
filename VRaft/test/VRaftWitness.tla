@@ -1,6 +1,6 @@
-------------------------- MODULE ForwardRaftWitness ---------------------------
+------------------------------ MODULE VRaftWitness -----------------------------
 \*
-\* Reachability witnesses for ForwardRaft. Each operator is the negation of a
+\* Reachability witnesses for VRaft. Each operator is the negation of a
 \* scenario the model is expected to reach. Checked as an invariant, it makes
 \* TLC stop with the shortest trace leading to the scenario - the proof the
 \* state space covers it, and a script for a test. A run which passes means
@@ -11,10 +11,10 @@
 \* PROPERTY of the form [][~step]_vars, which TLC checks on every transition
 \* of the same search.
 \*
-\* Run one at a time: tlc -config witness/<Name>.cfg ForwardRaftWitness.tla
+\* Run one at a time: tlc -config witness/<Name>.cfg VRaftWitness.tla
 \*
 
-EXTENDS ForwardRaft
+EXTENDS VRaft
 
 \* Every data node refuses every other one. The voters stay in the appliers -
 \* they send no rows, so there is nothing to refuse from them.
@@ -25,8 +25,8 @@ WitnessAllLinksBroken ==
 WitnessTwoLeadersOneTerm ==
     ~\E a \in DataNodes, b \in DataNodes:
         /\ a # b
-        /\ PromoteIsValid(Nodes[a].limbo_promotions[a])
-        /\ PromoteIsValid(Nodes[b].limbo_promotions[b])
+        /\ PromoteIsPresent(Nodes[a].limbo_promotions[a])
+        /\ PromoteIsPresent(Nodes[b].limbo_promotions[b])
         /\ Nodes[a].limbo_promotions[a].raft_term =
            Nodes[b].limbo_promotions[b].raft_term
 
@@ -53,8 +53,8 @@ WitnessPoisonedConfirmRefused ==
                                                   dst_node.limbo_promotions)
              IN
              /\ entry.type = EntryTypeConfirm
-             /\ PromoteIsValid(promote)
-             /\ PromoteIsPoisoned(dst_node, promote)]_vars
+             /\ PromoteIsPresent(promote)
+             /\ NodeSeesPromotePoisoned(dst_node, promote)]_vars
 
 \* A PROMOTE delivered ahead of its term - the receiver's Raft term is still
 \* below the pending PROMOTE's one.
@@ -62,7 +62,7 @@ WitnessPromoteAheadOfTerm ==
     ~\E nid \in DataNodes, origin \in DataNodes:
         LET promote == Nodes[nid].limbo_promotions[origin]
         IN
-        /\ PromoteIsValid(promote)
+        /\ PromoteIsPresent(promote)
         /\ promote.raft_term > Nodes[nid].raft_term
 
 \* A confirmed chained PROMOTE which mattered: its CONFIRM advances the
@@ -91,9 +91,9 @@ WitnessOlderPromoteConfirmedLater ==
           /\ node.limbo_owner = nid
           /\ Nodes[nid].limbo_term < node.limbo_term
           /\ \E o \in NodeIDs \ {nid}:
-              /\ PromoteIsValid(node.limbo_promotions[o])
+              /\ PromoteIsPresent(node.limbo_promotions[o])
               /\ node.limbo_promotions[o].raft_term > node.limbo_term
-              /\ ~PromoteIsPoisoned(node, node.limbo_promotions[o])]_vars
+              /\ ~NodeSeesPromotePoisoned(node, node.limbo_promotions[o])]_vars
 
 \* A limbo leader with a newer PROMOTE pending beside it. The pending demotes
 \* nothing - the leader keeps writing until it observes the Raft term or
@@ -106,7 +106,7 @@ WitnessLeaderWithNewerPending ==
         IN
         /\ nid # origin
         /\ node.limbo_state = LimboStateLeader
-        /\ PromoteIsValid(promote)
+        /\ PromoteIsPresent(promote)
         /\ promote.raft_term > node.limbo_term
 
 \* A CONFIRM written on a delayed ack: among the counted acks is one from a
@@ -122,8 +122,8 @@ WitnessConfirmOnDelayedAck ==
                       /\ HasEntry(Nodes[o], entry)
                       /\ Nodes[o].raft_term <= node.raft_term}) < Quorum
           IN
-          \/ LimboConfirmPromote(nid) /\ FreshAcksBelowQuorum(node.limbo_promotions[nid])
-          \/ LimboConfirmTransaction(nid) /\ FreshAcksBelowQuorum(node.limbo)]_vars
+          \/ NodeConfirmPromote(nid) /\ FreshAcksBelowQuorum(node.limbo_promotions[nid])
+          \/ NodeConfirmTransaction(nid) /\ FreshAcksBelowQuorum(node.limbo)]_vars
 
 \* The replication is finished with the cluster split in two groups: every
 \* pair across the cut refused each other both ways, every pair inside a
@@ -159,15 +159,15 @@ WitnessChainSquashesOwnPending ==
           LET node == Nodes[nid]
               own == node.limbo_promotions[nid]
           IN
-          /\ LimboWritePromote(nid)
-          /\ PromoteIsValid(own)
-          /\ ~PromoteIsPoisoned(node, own)
+          /\ NodeStartPromote(nid)
+          /\ PromoteIsPresent(own)
+          /\ ~NodeSeesPromotePoisoned(node, own)
           /\ \E other \in NodeIDs:
               LET pending == node.limbo_promotions[other]
               IN
               /\ other # nid
-              /\ PromoteIsValid(pending)
-              /\ ~PromoteIsPoisoned(node, pending)
+              /\ PromoteIsPresent(pending)
+              /\ ~NodeSeesPromotePoisoned(node, pending)
               /\ pending.raft_term > own.raft_term]_vars
 
 \* A poisoned pending PROMOTE replaced in its slot by its origin's later one:
@@ -177,9 +177,9 @@ WitnessPoisonedReplacedByOrigin ==
           LET old == Nodes[nid].limbo_promotions[origin]
               new == Nodes'[nid].limbo_promotions[origin]
           IN
-          /\ PromoteIsValid(old)
-          /\ PromoteIsPoisoned(Nodes[nid], old)
-          /\ PromoteIsValid(new)
+          /\ PromoteIsPresent(old)
+          /\ NodeSeesPromotePoisoned(Nodes[nid], old)
+          /\ PromoteIsPresent(new)
           /\ new.raft_term > old.raft_term]_vars
 
 \* Three fork sides: every data node owns the limbo on itself, each having

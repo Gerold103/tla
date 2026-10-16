@@ -2,10 +2,17 @@
 """Run TLC on a list of configs, one at a time, stopping at the first failure.
 
 Usage:
-    run.py --tlc tla2tools.jar --spec SPEC.tla --metadir DIR
+    run.py --tlc tla2tools.jar --metadir DIR [--library DIR[:DIR...]]
            [--java "<java and its options>"] [--java-heap SIZE] [--fpmem X]
            [--workers N|auto] [--checkpoint N] [--interval N] [--witness]
            [--simulate [--depth D] [--traces N]] CFG...
+
+Every config names the module it checks in a header line gen.py writes:
+    \\* spec: <path to the module>.tla
+relative to the config. A module extending one from another directory needs
+that directory on TLC's library path: --library, the directories joined by
+the path separator, passed to the JVM as -DTLA-Library. The test modules in
+VRaft/test extend VRaft/VRaft.tla, so a run of them has --library VRaft.
 
 A config is checked exhaustively, or by TLC's random simulation: random
 behaviors from the initial state, each up to a depth (TLC's default 100),
@@ -72,6 +79,7 @@ import time
 PASS_MARK = "Model checking completed. No error has been found."
 ERROR_RE = re.compile(r"^Error:", re.MULTILINE)
 RUN_LINE_PREFIX = "\\* run: "
+SPEC_LINE_PREFIX = "\\* spec: "
 VIOLATION_RE = re.compile(r"^Error: (?:Invariant|Action property) (\S+) is violated\.",
                           re.MULTILINE)
 
@@ -91,23 +99,28 @@ def last_progress(path):
 
 
 def run_options(cfg_path):
-    """run.py's options for the config: the JSON of its `\\* run:` header
-    line, written by gen.py; {} without the line."""
+    """run.py's options for the config from its header lines, written by
+    gen.py: the JSON of `\\* run:`, and the module of `\\* spec:` under
+    "spec", as a path relative to the config; {} without the lines."""
+    opts = {}
     with open(cfg_path) as f:
         for line in f:
+            if line.startswith(SPEC_LINE_PREFIX):
+                opts["spec"] = line[len(SPEC_LINE_PREFIX):].strip()
+                continue
             if not line.startswith(RUN_LINE_PREFIX):
                 continue
-            opts = json.loads(line[len(RUN_LINE_PREFIX):])
-            unknown = set(opts) - {"simulate"}
+            run = json.loads(line[len(RUN_LINE_PREFIX):])
+            unknown = set(run) - {"simulate"}
             if unknown:
                 sys.exit("%s: unknown run options %s" % (cfg_path, sorted(unknown)))
-            sim = opts.get("simulate")
+            sim = run.get("simulate")
             if sim is not None and \
                     ("traces" not in sim or set(sim) - {"traces", "depth"}):
                 sys.exit("%s: run simulate takes traces (required) and depth"
                          % cfg_path)
-            return opts
-    return {}
+            opts.update(run)
+    return opts
 
 
 def simulate_opts(sim, workers):
@@ -153,13 +166,23 @@ def run_one(cmd, cwd, out_path, interval, label, simulate):
 
 
 def print_failure(text, out_path):
+    # The errors, and the messages of the failed Asserts: a string, or a
+    # tuple when the message carries a value, like the step of a script.
     for line in text.splitlines():
-        if line.startswith("Error:") or line.startswith("\""):
+        if line.startswith("Error:") or line.startswith("\"") or \
+                line.startswith("<<"):
             print("  " + line)
+    # A script's trace ends at the step it got to: the state after step N
+    # has step N + 1, so a failed checkpoint is the one after step N.
+    steps = [line for line in text.splitlines() if line.startswith("/\\ step = ")]
+    if steps:
+        step = int(steps[-1][len("/\\ step = "):])
+        print("  last state: after script step %d" % (step - 1))
     print("  output: %s" % out_path)
     tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tlatrace.py")
     if os.path.exists(tool) and "State 1:" in text:
-        print("  trace actions:")
+        # The tool writes to the same stdout: flush, or its lines come first.
+        print("  trace actions:", flush=True)
         subprocess.run([sys.executable, tool, out_path, "actions"])
 
 
@@ -186,7 +209,10 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tlc", required=True, metavar="JAR",
                         help="path to tla2tools.jar")
-    parser.add_argument("--spec", required=True, help="the .tla module to check")
+    parser.add_argument("--library", metavar="DIR[:DIR...]",
+                        help="TLC's library path for the modules the checked "
+                        "ones extend, passed as -DTLA-Library; the test "
+                        "modules in VRaft/test need VRaft")
     parser.add_argument("--java", default="java", metavar="CMD",
                         help="the JVM binary with its options, as one string; "
                         "default 'java'. Example: 'java -XX:+UseParallelGC "
@@ -240,8 +266,6 @@ def main():
         parser.error("--traces and --depth need --simulate; a config's own "
                      "simulation is set in the matrix")
 
-    spec = os.path.abspath(args.spec)
-    cwd = os.path.dirname(spec)
     cfgs = [os.path.abspath(c) for c in args.cfgs if c.endswith(".cfg")]
     if not cfgs:
         print("no .cfg files given")
@@ -249,6 +273,9 @@ def main():
     java = shlex.split(args.java)
     if args.java_heap is not None:
         java.append("-Xmx" + args.java_heap)
+    if args.library is not None:
+        dirs = [os.path.abspath(d) for d in args.library.split(os.pathsep)]
+        java.append("-DTLA-Library=" + os.pathsep.join(dirs))
     java += ["-cp", os.path.abspath(args.tlc), "tlc2.TLC"]
     tlc_opts = ["-workers", args.workers]
     # The trace exploration spec TLC writes next to the module on a failure
@@ -270,10 +297,16 @@ def main():
         name = os.path.basename(cfg)[:-len(".cfg")]
         out_path = cfg[:-len(".cfg")] + "_out.txt"
         meta = os.path.join(metadir, name)
+        opts = run_options(cfg)
+        if "spec" not in opts:
+            print("%s names no module in a '\\* spec:' line" % cfg)
+            return 2
+        spec = os.path.normpath(os.path.join(os.path.dirname(cfg), opts["spec"]))
+        cwd = os.path.dirname(spec)
         if args.simulate:
             sim = {"traces": args.traces, "depth": args.depth}
         else:
-            sim = run_options(cfg).get("simulate")
+            sim = opts.get("simulate")
         cmd = java + tlc_opts
         if sim is not None:
             cmd = cmd + simulate_opts(sim, workers)
