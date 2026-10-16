@@ -1,10 +1,9 @@
 # Forward Raft
 
-Forward Raft is a modification of the Raft consensus protocol.
+Forward Raft is a modification of the Raft consensus protocol [1].
 
 Its key differences are:
-- Separation of leader election and synchronous replication into 2 different
-  sub-systems.
+- Separation of leader election and synchronous replication.
 - Guaranteed split-brain detection in low-quorum cases.
 - Compatible with append-only Write Ahead Logs.
 
@@ -13,113 +12,203 @@ It is used in Tarantool DBMS.
 ## 1. Setting
 
 A **replica set** is a few nodes, each holding a copy of the **journal**: an
-append-only log of rows. Every row has an **origin** (the node that wrote it)
-and an **LSN**, the origin's own counter; the pair identifies the row
-everywhere. A node's journal contains its own rows and the rows it received
-from the others, in the order it received them - its WAL order.
+append-only log of rows - the write-ahead log (WAL) of a database, in which
+nothing is ever removed or overwritten.
 
-Nodes replicate to each other over **links**. The link from A to B is B's
-*applier* connected to A's *relay*: A sends B the rows of A's journal that B
-lacks, in A's WAL order, and B sends back **acknowledgements** - its vclock,
-the LSN it holds for every origin - over the same connection. In a full mesh
-every node has a link from every other, so a row of origin O can reach a
-node directly from O or relayed through a third node; either way the rows of
-one origin always arrive in LSN order, and a relay never reorders rows
-across origins relative to its own WAL.
+Every row has an **origin** (the node that wrote it) and an **LSN**, a log
+sequence number from the origin's own monotonic persistent counter. The pair
+identifies the row everywhere.
+
+A node's journal contains its own rows and the rows it received from the others,
+in the order it received them - its **WAL order**. Unlike a Raft log, whose
+entries all come from the leader and are identified by index and term, the
+journal interleaves rows of many origins and identifies them by origin and LSN.
+
+Nodes replicate to each other over **links**. The link from A to B carries
+A's journal to B: A sends the rows B lacks, in A's WAL order, and B sends
+back **acknowledgements** - its **vclock**, a vector clock holding for every
+origin the LSN up to which B has that origin's rows - over the same
+connection. (In Tarantool the receiving end of a link is the *applier*, the
+sending end the *relay*.)
+
+In a full mesh every node has a link from every other, so a row written by A
+can reach B directly from A or relayed through a third node C; either way the
+rows of one origin always arrive in LSN order, and a node relaying rows never
+reorders them across origins relative to its own WAL.
 
 Some nodes are **voters**: they take part in elections and nothing else -
-they hold no data and acknowledge nothing. The rest are **data nodes**.
+they hold no data and acknowledge nothing. They only keep track of the terms and
+their votes. The rest are **data nodes**.
 
-Elections are **Raft**. Time is divided into **terms**; a node starts an
-election by moving to a new term and voting for itself, becoming a
-candidate; the others at that term vote once each, and only for a candidate
-whose journal contains everything they have; a candidate with a **quorum**
-of votes is the Raft leader of the term. A node that sees a higher term
-moves to it and becomes a follower, dropping any leadership. The terms travel
-both with the rows and with the acknowledgements, so a node learns of a
-higher term over a link in either direction. A leader leaves its leadership
-by seeing a higher term or by starting a new election itself (a resigned or
-restarted leader is a follower of the same term that can never be elected in
-it again, so for the protocol it is the same as a leader that will start a
-new election).
+Elections are Raft's [1, section 5.2], basically unchanged. Time is divided into
+**terms**. A node starts an election by moving to a new term and voting for
+itself, becoming a candidate. The others at that term vote once each, and only
+for a candidate whose journal contains everything they have — Raft's election
+restriction [1, section 5.4.1]. Where Raft compares the index and term of the
+last log entry, Forward Raft compares vclocks, the candidate's at or above the
+voter's in every component.
 
-One number, the **quorum**, serves both the elections and the
-confirmations below. When the quorum is a majority of the nodes any two
-quorums intersect, which is what makes the guarantees of section 7 hold; a
-smaller quorum is a legal configuration, and section 8 is about what the
-protocol promises then.
+A candidate with a **quorum** of votes is the Raft leader of the term. A node
+that sees a higher term moves to it and becomes a follower, dropping any
+leadership. The terms travel both with the rows and with the acknowledgements,
+so a node learns of a higher term over a link in either direction.
+
+A leader leaves its leadership by seeing a higher term or by starting a new
+election itself (a resigned or restarted leader is a follower of the same term
+that can never be elected in it again, so for the protocol it is the same as a
+leader that will start a new election).
+
+One number, the **quorum**, serves both the elections and the confirmations for
+"decisions" like transactions. When the quorum is a majority of the nodes, any
+two quorums intersect - this is the ideal case, where the nodes never conflict
+each other. When the quorum is 50% of the cluster or lower, this gets dangerous,
+and the protocol is catching these cases.
 
 ## 2. The limbo
 
-Synchronous transactions are not committed when written; they wait in the
-**limbo** until a quorum of nodes has acknowledged them. The limbo has an
-**owner**, the node allowed to write synchronous transactions, and the
-owner's **term**. Only the Raft leader of the owner's term is a working
+A transaction is **synchronous** when its commit waits for a quorum of nodes to
+hold it. Synchronous transactions are not committed when written; they wait in
+the **limbo** - the queue of written, not yet committed transactions - until a
+quorum of nodes has acknowledged them.
+
+The limbo has an **owner**, the node allowed to write synchronous transactions,
+and the owner's **term**. Only the leader of the owner's term is a working
 owner: the limbo is writable on a node exactly when the node owns it, is the
-Raft leader, and its Raft term equals the limbo's term.
+leader, and its election term equals the limbo's term. This is the separation
+from the vanilla Raft: a leader can be elected, but it doesn't immediately own
+the limbo. The leader needs to be promoted. The nodes, which didn't see the new
+leader's promotion, still consider the limbo owned by its previous owner.
 
-The owner writes a transaction, replicates it, counts the acknowledgements
-of nodes that have it (its own write is one), and when they reach the
-quorum writes a **CONFIRM** row: "my rows up to LSN X are confirmed". Every
-node applying that CONFIRM commits the owner's transactions up to X. Nothing
-is ever committed without a CONFIRM row for it; a transaction never
-confirmed is rolled back by the next leader (section 3).
+The owner writes a transaction, replicates it, counts the acknowledgements of
+nodes that have it (its own write is one), and when they reach the quorum writes
+a **CONFIRM** row: *"my rows up to LSN X are confirmed"*. Every node applying
+that CONFIRM commits the owner's transactions up to X.
 
-An acknowledgement carries the Raft term of the node sending it, at the
-time of sending. The owner processes the term first: an acknowledgement
-from a node that moved to a higher term is not counted, it demotes the
-owner. An acknowledgement may be delivered late - after its sender moved
-on - and still counts, because its term was valid when sent. Acknowledgements
-travel over the acknowledging node's applier from the owner; a node that
-closed that applier (section 6) is never heard from again, whatever it
-receives through others.
+Nothing is ever committed without a CONFIRM row for it; a transaction never
+confirmed by its own author can be rolled back or confirmed by the next leader.
 
-Every node derives from the rows it has applied a **confirmed vclock** -
-for each origin, the LSN up to which that origin's rows are confirmed - and
-an **applied term map** - for each node, the term of its latest promotion
-that was confirmed (section 3). Both are what the filters of section 6
-compare against.
+In the vanilla Raft the commit point is the leader's commit index, carried in
+messages and never in the log; here it is a row of the journal, replicated,
+relayed and recovered like every other row, which is what lets a node's state be
+reconstructed from its journal alone.
+
+An acknowledgement carries the election term of the node sending it, at the time
+of sending. The owner processes the term first: an acknowledgement from a node
+that moved to a higher term is not counted, it **demotes** the owner - the owner
+moves to the higher term and is a follower, and the limbo is not writable on it
+anymore.
+
+An acknowledgement may be delivered late - after its sender moved on - and still
+counts, because its term was valid when sent.
+
+Acknowledgements travel back over the link they acknowledge, the one from the
+owner to the acknowledging node; a node that closed that link is never heard
+from again by the owner, whatever it receives through others.
+
+Every node derives from the rows it has applied a **confirmed vclock** - for
+each origin, the LSN up to which that origin's rows are confirmed - and an
+**applied term map** - for each node, the term of its latest promotion that was
+confirmed. Both are what the checks against split-brain compare against.
 
 ## 3. Changing the owner: PROMOTE
 
 When a node wins an election it does not own the limbo yet. It writes a
 **PROMOTE** row claiming it:
+```
+PROMOTE {
+  origin,
+  lsn,
+  term,
+  prev_owner,
+  confirmed_vclock,
+  term_map,
+}
+```
 
-- its **term**;
-- the **previous owner** and the **confirm LSN**: the verdict on the
-  previous owner's queue - its transactions up to that LSN are to be
-  committed, the ones after it rolled back. The new leader decides this from
-  what it holds: everything it has of the previous owner's queue is to be
-  committed, since the election guarantees that whatever could have gathered
-  a quorum anywhere is in the new leader's journal;
-- the **confirmed vclock** that becomes true when this PROMOTE is confirmed:
-  the leader's own, with the verdict written in, and the PROMOTE row itself;
-- the **term map**: the latest term the leader knows for every node - its
-  applied map with its own new term written in. This is how a receiver later
-  tells whether the author knew about the promotions already confirmed.
+- `origin` - the ID of the node which made this promote.
+- `lsn` - LSN of the promote's journal entry in the origin's journal.
+- `term` - the election term in which the origin node won the elections,
+  and in scope of which it is trying to claim the limbo.
+- `prev_owner` - previous owner, the ID of the limbo owner which the origin saw
+  when made this promote.
+- `confirmed_vclock` - the origin's vision of the latest confirmed LSNs of all
+  the nodes in the cluster, which ever were leaders.
+- `term_map` - the origin's vision of latest of the latest terms of confirmed
+  promotions of all nodes in the cluster, which ever were leaders.
 
-The PROMOTE does not take effect when written. It is **pending** - on its
-author and on every node that receives it - until its author has collected
-a quorum of acknowledgements for it, exactly like a transaction, and writes
-the PROMOTE's **CONFIRM**: "my rows up to the PROMOTE's LSN are confirmed",
-the same row kind as a transaction's CONFIRM, naming the PROMOTE's own row.
-Only the author confirms its PROMOTE, and only while it is still the Raft
-leader of that term: a leader that lost the term cannot confirm, and its
-pending PROMOTE stays where it is, like on every other node, until a newer
-promotion supersedes it.
+The previous owner ID and the confirmed vclock together say the verdict on the
+previous owner's queue - its transactions up to `confirmed_vclock[prev_owner]`
+LSN are to be committed, the ones after it rolled back.
 
-Applying a PROMOTE's CONFIRM, on any node, is the change of power: the
-owner becomes the PROMOTE's author, the limbo's term its term; the previous
-owner's queued transaction is committed or rolled back by the verdict; the
-node's confirmed vclock and term map are replaced by the PROMOTE's; pending
-promotions whose origin's term is now at or below the applied map are
-dropped as **covered** (section 4). From then on the node accepts
-transactions from the new owner and no one else.
+The new leader decides this from what it holds: everything it has of the
+previous owner's queue is to be committed, since the election guarantees that
+whatever could have gathered a quorum anywhere is in the new leader's journal.
 
-Each node keeps **one pending PROMOTE per origin**, the latest. A newer
-PROMOTE from the same origin replaces an older pending one. Pending
-promotions are kept even when they can no longer be applied (section 4):
-their CONFIRM may still arrive and must be recognized.
+The PROMOTE is Forward Raft's counterpart of the entry a new Raft leader commits
+at the start of its term to settle the fate of the previous terms' entries
+[1, sections 5.4.2 and 8].
+
+However two things differ. The journal is append-only, so the previous owner's
+unconfirmed transactions are not truncated the way Raft truncates a conflicting
+log suffix: they stay in the journal, and the verdict - commit up to the confirm
+LSN, roll back the rest - is a decision recorded in the PROMOTE and carried out
+by every node when the PROMOTE takes effect.
+
+In order for this to work the PROMOTE can not take effect when written. It
+remains **pending** - on its author and on every node that receives it - until
+its author has collected a quorum of acknowledgements for it, exactly like a
+transaction, and writes the PROMOTE's own **CONFIRM**: *"my rows up to the
+PROMOTE's LSN are confirmed"*, the same row kind as a transaction's CONFIRM,
+naming the PROMOTE's own row.
+
+Essentially, PROMOTE can be considered the limbo owner transition transaction,
+and follows same rules are regular transactions do.
+
+Only the author confirms its PROMOTE, and only while it is still the leader of
+that term: a leader that lost the term cannot confirm, and its pending PROMOTE
+stays where it is, like on every other node, until a newer promotion supersedes
+it.
+
+Applying a PROMOTE's CONFIRM, on any node, is the change of power:
+- the PROMOTE's author becomes the owner of the limbo.
+- the PROMOTE's term is assigned to the limbo.
+- the previous owner's queued transactions are all committed or rolled back,
+  depending on their position against the confirmed LSN.
+- the limbo's confirmed vclock and term map are replaced by the PROMOTE's;
+- pending promotions whose origin's election term is now at or below the applied
+  map are dropped as **covered** (chained from the just applied PROMOTE, see
+  more on that below).
+
+From then on the node accepts transactions from the new owner and no one else.
+
+Each node keeps **one pending PROMOTE per origin**, the latest - the origin's
+**slot**. A newer PROMOTE from the same origin replaces an older pending one.
+Pending promotions are kept even when they can no longer be applied: their
+CONFIRM may still arrive and must be recognized for the sake of split brain
+detection.
+
+
+
+
+
+
+
+
+
+//// TODO
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## 4. Poisoned promotions and chaining
 
@@ -152,8 +241,8 @@ whether the other ever does, the node ends in the same state; and once the
 newer PROMOTE is confirmed the older one is covered and dropped. A poisoned
 pending PROMOTE is never chained from - there is nothing to stay consistent
 with, chaining would only inherit the poison. The base of a chain is the
-only link that writes the verdict on the previous owner; later links change
-nothing about it.
+only PROMOTE in it that writes the verdict on the previous owner; the ones
+chained on top change nothing about it.
 
 A leader does not promote while it holds a pending PROMOTE of a term at or
 above its own: the elections have moved past it and it does not know yet
@@ -163,12 +252,12 @@ holds one per origin - with a consequence described in section 8.
 
 ## 5. Transactions under a change of owner
 
-A transaction row names its origin and LSN, not its term; a receiver
-derives the term from its applied map: the term of the origin's latest
-confirmed promotion. Because rows of one origin arrive in order, the
-transaction is always received after the CONFIRM of the PROMOTE that made
-its origin the owner, and before any later row of that origin, so the
-derivation is exact.
+A transaction row names its origin and LSN, not its term (a Raft entry
+carries its term; here only a PROMOTE does); a receiver derives the term
+from its applied map: the term of the origin's latest confirmed promotion.
+Because rows of one origin arrive in order, the transaction is always
+received after the CONFIRM of the PROMOTE that made its origin the owner,
+and before any later row of that origin, so the derivation is exact.
 
 A transaction from the current owner is queued, waiting for its CONFIRM. A
 transaction from a node whose applied term is below the limbo's - an old
@@ -178,11 +267,16 @@ promote itself, and that PROMOTE is what gets refused.
 
 ## 6. Refusals: split-brain detection
 
-A node refuses a row that contradicts its state, and a refusal **closes the
-link** the row came over, permanently: the applier stops with a split-brain
-error and nothing from that source is received again. The refused row is not
-journaled - so a node's journal never contains two rows that contradict
-each other, and the vclocks never advance past a refusal. The refusals:
+A **split brain** is two nodes both working as the owner, each confirmed by
+a quorum of its own - possible only when quorums need not intersect
+(section 8). A **fork** is what it does to the data: a transaction committed
+on one side and rolled back on the other, two promotions confirmed by
+disjoint quorums. Nodes detect both by their rows. A node refuses a row that
+contradicts its state, and a refusal **closes the link** the row came over,
+permanently: the receiving end stops with a split-brain error and nothing
+from that source is received again. The refused row is not journaled - so a
+node's journal never contains two rows that contradict each other, and the
+vclocks never advance past a refusal. The refusals:
 
 - a **PROMOTE** of a term the node knows as taken by another node - in its
   applied map, or as another node's pending PROMOTE. A term hosts at most
@@ -198,7 +292,9 @@ A CONFIRM whose LSN is at or below what the node already has confirmed for
 that origin is nothing to do and is applied as a no-op: the late CONFIRM of
 a PROMOTE already covered by a chain, for instance.
 
-Nothing heals a closed link; an operator rebootstraps the node.
+Nothing heals a closed link; an operator rebuilds the node from a copy of a
+node on the other side, discarding its journal (in Tarantool, a
+rebootstrap).
 
 ## 7. Guarantees under a majority quorum
 
@@ -264,16 +360,19 @@ link breaks nothing: the follower holds everything the other side holds.
 
 ## 9. The model
 
-`ForwardRaft.tla` is the protocol above as a state machine; `ForwardRaftWitness.tla`
-holds the reachability witnesses. Where the model simplifies the protocol
-it says so in a comment: the owner has one transaction in flight at a time
-(the all-or-nothing verdict; a partially covered queue is not modeled);
-voters receive no rows at all (so a quorum above the data node count can
-never be met, and such configurations are not generated); ROLLBACK rows,
-DEMOTE rows and link recovery are out of scope; a run is bounded by a
-maximum term and optionally by a maximum number of PROMOTEs in the cluster.
-The spec's comments point to the Tarantool functions a choice mirrors:
-`txn_limbo.c`, `raft.c`, `relay.cc`, `applier.cc`.
+The protocol above is written as a state machine in TLA+ [2], in
+`ForwardRaft.tla`, and checked by TLC, the TLA+ model checker, which
+enumerates every reachable state of a finite instance of it; the
+reachability witnesses are in `ForwardRaftWitness.tla`. Where the model
+simplifies the protocol it says so in a comment: the owner has one
+transaction in flight at a time (the all-or-nothing verdict; a partially
+covered queue is not modeled); voters receive no rows at all (so a quorum
+above the data node count can never be met, and such configurations are not
+generated); explicit rollback and resignation rows (Tarantool's ROLLBACK and
+DEMOTE) and link recovery are out of scope; a run is bounded by a maximum
+term and optionally by a maximum number of PROMOTEs in the cluster. Where a
+choice mirrors a particular piece of the Tarantool implementation, the
+specification's comment names it.
 
 What is checked, as invariants on every state:
 
@@ -331,11 +430,11 @@ default 999 never binds), `invariant` or `property` (an extra check), and
 random simulation, below, instead of the exhaustive search). The names
 carry their position, so a shell glob runs them in matrix order - ascending
 by measured duration: 01-04 take seconds, 05 and 06 about 15 and 30 minutes
-on 16 cores, 07 hours; 08 with two transactions and six PROMOTEs passed 3.4
-billion states in two days at depth 29 of about 50 and was abandoned, it now
-runs with one transaction and four PROMOTEs, size unknown; 09 and 10 are
-simulated, a billion traces each - days on 16 cores at the measured rate,
-to be timed on the server. **Do not start 05-10 casually.**
+on 16 cores, 07 hours, 08 22 hours (with one transaction and four PROMOTEs;
+with two transactions and six PROMOTEs it passed 3.4 billion states in two
+days at depth 29 of about 50 and was abandoned); 09 and 10 are simulated, a
+billion traces each - days on 16 cores at the measured rate, to be timed on
+the server. **Do not start 05-10 casually.**
 The witnesses take 20 seconds together and are the first thing to run after
 any change to the spec. `run.py --help` explains every flag; the heap and
 fingerprint flags matter on the big runs (a starved JVM deadlocks TLC
@@ -367,5 +466,13 @@ must be a `~\A`, a `Cardinality` or a set comparison. Parse with
 `java -cp tla2tools.jar tla2sany.SANY ForwardRaftWitness.tla` from this
 directory.
 
-The history of the model's review, with the findings and the decisions, is
-in the Tarantool repository under `reviews/tla-spec-review.md`.
+## References
+
+1. Diego Ongaro and John Ousterhout. *In Search of an Understandable
+   Consensus Algorithm (Extended Version)*. Stanford University, 2014.
+   Sections cited: 5.2 (leader election), 5.4.1 (election restriction),
+   5.4.2 (committing entries from previous terms), 8 (the no-op entry at
+   the start of a term).
+2. Leslie Lamport. *Specifying Systems: The TLA+ Language and Tools for
+   Hardware and Software Engineers*. Addison-Wesley, 2002. The TLA+ tools,
+   including the TLC model checker: https://github.com/tlaplus/tlaplus.

@@ -8,7 +8,7 @@
 # 02 7 s, 03 9 s, 04 26 s, 05 838 s, 06 1649 s; 07 completes (its one
 # deadlock was a starved JVM, see the review doc). 08 with two txns and 6 of
 # 9 PROMOTEs passed 3.4B states in two days at depth 29 of ~50 and was
-# abandoned; it is now one txn and 4 PROMOTEs, its size still to be measured.
+# abandoned; with one txn and 4 PROMOTEs it passed in 22 h (2026-10-16).
 #
 # 09 and 10 are simulated: `simulate: traces: N` makes run.py run TLC's
 # random simulation on the config - N behaviors of up to `depth` steps -
